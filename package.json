@@ -1,0 +1,18 @@
+{
+  "name": "karaneh-management-system",
+  "version": "1.0.0",
+  "description": "Karaneh (merit bonus) calculation and payment system — a browser-based replacement for the Merit.xlsb workbook chain.",
+  "private": true,
+  "scripts": {
+    "build": "node tools/build.js",
+    "test": "node tests/engine.test.js",
+    "test:e2e": "node tools/build.js && node tests/ui.e2e.js",
+    "test:all": "node tests/engine.test.js && node tools/build.js && node tests/ui.e2e.js",
+    "extract": "python3 tools/extract_merit.py Merit.xlsb",
+    "serve": "npx http-server . -p 8080 -c-1"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.0"
+  },
+  "license": "UNLICENSED"
+}

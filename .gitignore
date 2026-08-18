@@ -1,0 +1,11 @@
+node_modules/
+*.tgz
+tmp-export.xlsx
+.DS_Store
+
+# Real HR data must never be committed. The reference workbooks contain
+# employee names and national IDs; keep them out of version control.
+*.xlsb
+*.xlsx
+*.xls
+!sample-data/*.xlsx
