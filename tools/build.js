@@ -22,6 +22,8 @@ var parts = {
   store:    read('src/data-store.js'),
   importer: read('src/excel-import.js'),
   postproc: read('src/xlsx-postprocess.js'),
+  templates: read('src/templates.js'),
+  charts:    read('src/charts.js'),
   ui:       read('src/ui.js'),
   app:      read('src/app.js')
 };
@@ -60,6 +62,8 @@ var html = [
   '<script>' + safe(parts.store)    + '</' + 'script>',
   '<script>' + safe(parts.importer) + '</' + 'script>',
   '<script>' + safe(parts.postproc) + '</' + 'script>',
+  '<script>' + safe(parts.templates) + '</' + 'script>',
+  '<script>' + safe(parts.charts)    + '</' + 'script>',
   '<script>' + safe(parts.ui)       + '</' + 'script>',
   '<script>' + safe(parts.app)      + '</' + 'script>',
   '</body>',

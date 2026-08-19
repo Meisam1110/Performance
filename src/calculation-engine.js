@@ -45,9 +45,20 @@
     maxPerformanceScore: 120,
     questionCount: 4,
 
-    /* Which questionnaire answers feed the performance score.
-       Merit scores Q1..Q4 only; Q5 is collected but deliberately excluded. */
-    scoredQuestions: ['q1', 'q2', 'q3', 'q4'],
+    /* The questionnaire itself. Text, weight and whether an answer is scored
+       are all editable in the designer, so the instrument can change without
+       touching this file. Merit scores Q1..Q4 with equal weight; Q5 is
+       collected but deliberately excluded from the score. */
+    questions: [
+      { id: 'q1', text: 'تا چه حد فرد وظایف محوله را با بهره‌گیری بهینه از زمان، منابع و انرژی انجام می‌دهد؟', weight: 1, scored: true },
+      { id: 'q2', text: 'آیا فرد در موقعیت‌های واقعی کاری، رفتارهای همسو با ارزش‌های سازمانی نشان می‌دهد؟', weight: 1, scored: true },
+      { id: 'q3', text: 'تا چه حد فرد با ذی‌نفعان داخل و خارج تیم همکاری مؤثر دارد؟', weight: 1, scored: true },
+      { id: 'q4', text: 'تا چه حد فرد مالکیت خروجی‌های خود را می‌پذیرد و آن‌ها را به سطح قابل قبول یا فراتر از انتظار می‌رساند؟', weight: 1, scored: true },
+      { id: 'q5', text: 'نسبت به بازخوردها واکنش سازنده نشان داده و در مسیر رشد یا آمادگی برای مسئولیت‌های بالاتر حرکت کرده است', weight: 0, scored: false }
+    ],
+
+    /* Text of the special-impact question shown on the template. */
+    specialImpactQuestion: 'فرد تا چه حد از طریق کار خود، ارزش‌آفرینی قابل مشاهده و مبتنی بر شواهد برای تیم، بخش یا سازمان ایجاد کرده است؟',
 
     /* روش پرداخت کارانه!D4 — minimum evaluation score to receive karaneh.
        thresholdMode 'gt' reproduces Merit exactly: a person scoring exactly
@@ -60,8 +71,15 @@
        which is why job level currently has no effect on the payout. */
     gradeImpactFactor: 0,
 
-    /* «کارانه اثرگذاری ویژه» — flat bonus coefficient for special impact */
+    /* «کارانه اثرگذاری ویژه» — flat bonus coefficient for special impact. */
     specialImpactAmount: 300,
+
+    /* The special-impact question may only be answered once the four scored
+       questions have already earned at least this many karaneh points. This is
+       what the reference workbook does: the one employee flagged for special
+       impact whose base score was 90 received no bonus, while the three
+       scoring 105, 120 and 105 all did. */
+    specialImpactMinScore: 100,
 
     /* پرسشنامه کارانه تیمی!B5 = A5 × 100 — the coefficient pool is normalised
        so the average employee carries exactly this many coefficient points. */
@@ -116,24 +134,40 @@
    * STAGE 1 — «پرسشنامه کارانه تیمی»
    * ========================================================================*/
 
+  /** The questions that actually contribute to the score, in order. */
+  function scoredQuestions(cfg) {
+    return (cfg.questions || []).filter(function (q) {
+      return q.scored !== false && num(q.weight) > 0;
+    });
+  }
+
   /**
-   * Column K «ارزیابی» — mean of the scored questionnaire answers.
+   * Column K «ارزیابی» — weighted mean of the scored questionnaire answers.
    * Excel:  =AVERAGE(F8:I8) after each answer is mapped through Data!H:I
-   * Returns null when any scored answer is missing, so incomplete
-   * questionnaires surface as a validation error instead of a silent zero.
+   *
+   * With every weight at 1 this is the plain average the workbook computes.
+   * Unequal weights let one question count for more without changing the
+   * 1..5 range of the result.
+   *
+   * Returns null when any scored answer is missing or uses wording the scale
+   * does not recognise, so incomplete questionnaires surface as a validation
+   * error instead of a silent zero.
    */
   function calculatePerformanceScore(record, config) {
     var cfg = mergeConfig(config);
-    var keys = cfg.scoredQuestions, total = 0, i, raw, mapped;
-    for (i = 0; i < keys.length; i++) {
-      raw = record[keys[i]];
+    var qs = scoredQuestions(cfg);
+    if (!qs.length) return null;
+    var total = 0, weight = 0, i, raw, mapped, w;
+    for (i = 0; i < qs.length; i++) {
+      raw = record[qs[i].id];
       if (isBlank(raw)) return null;
-      mapped = typeof raw === 'number' ? raw
-             : cfg.answerScale[String(raw).trim()];
-      if (mapped === undefined) return null;   // unrecognised wording
-      total += mapped;
+      mapped = typeof raw === 'number' ? raw : cfg.answerScale[String(raw).trim()];
+      if (mapped === undefined) return null;
+      w = num(qs[i].weight);
+      total += mapped * w;
+      weight += w;
     }
-    return total / keys.length;
+    return weight ? total / weight : null;
   }
 
   /**
@@ -147,16 +181,44 @@
   }
 
   /**
-   * Column N «کارانه اثرگذاری ویژه» — flat coefficient bonus when the manager
-   * flagged the person for special impact / a special project.
-   * A per-record override wins over the configured flat amount.
+   * Column N «کارانه اثرگذاری ویژه» — coefficient bonus for special impact.
+   *
+   * The bonus is gated: it applies only once the scored questions have already
+   * earned `specialImpactMinScore` karaneh points. A manager can flag anyone,
+   * but the flag only pays out above the bar. A per-record amount overrides
+   * the configured flat value.
+   *
+   * @param karanehScore column L for this employee, or null if unscored.
    */
-  function calculateSpecialImpact(record, config) {
+  function calculateSpecialImpact(record, config, karanehScore) {
+    var cfg = mergeConfig(config);
+    if (!isSpecialImpactUnlocked(karanehScore, cfg)) return 0;
+    return specialImpactEntered(record, cfg);
+  }
+
+  /**
+   * The bonus the manager's answer implies, before the gate is applied.
+   * This is what column N of the workbook holds: employee 4 carries 300 there
+   * even though column O — which applies the gate — added nothing.
+   */
+  function specialImpactEntered(record, config) {
     var cfg = mergeConfig(config);
     if (!isSpecialImpact(record)) return 0;
     var override = record.specialImpactAmount;
     if (!isBlank(override) && num(override) !== 0) return num(override);
-    return cfg.specialImpactAmount;
+    return num(cfg.specialImpactAmount);
+  }
+
+  /**
+   * Whether the special-impact question may be answered at all. Drives both
+   * the payout gate above and the enabled state of the input in the UI, so
+   * the rule is stated in exactly one place.
+   */
+  function isSpecialImpactUnlocked(karanehScore, config) {
+    var cfg = mergeConfig(config);
+    var floor = num(cfg.specialImpactMinScore);
+    if (!floor) return true;
+    return karanehScore !== null && karanehScore !== undefined && karanehScore >= floor;
   }
 
   function isSpecialImpact(record) {
@@ -263,17 +325,22 @@
         division:      r.division || '',
         positionTitle: r.positionTitle || '',
         jobLevel:      normalizeJobLevel(r.jobLevel),
-        q1: r.q1, q2: r.q2, q3: r.q3, q4: r.q4, q5: r.q5,
         specialProject: isSpecialImpact(r),
         hodComment:    r.hodComment || '',
         sourceFile:    r.sourceFile || '',
         excluded:      !!r.excluded,
         _input:        r
       };
+      /* Answers are copied by the configured question ids, so adding a
+         question in the designer needs no change here. */
+      (cfg.questions || []).forEach(function (q) { row[q.id] = r[q.id]; });
 
       row.performanceScore   = calculatePerformanceScore(r, cfg);          // K
       row.performanceKaraneh = calculateKaranehScore(row.performanceScore, cfg); // L
-      row.specialImpactValue = calculateSpecialImpact(r, cfg);             // N
+      row.specialImpactUnlocked = isSpecialImpactUnlocked(row.performanceKaraneh, cfg);
+      row.specialImpactEntered = specialImpactEntered(r, cfg);             // N
+      row.specialImpactValue = calculateSpecialImpact(r, cfg, row.performanceKaraneh);
+      row.specialImpactBlocked = row.specialProject && !row.specialImpactUnlocked;
       row.rawCoefficient     = calculateRawCoefficient(row.performanceKaraneh,
                                                        row.specialImpactValue); // O
       row.gradeScore         = getGradeScore(r.jobLevel, cfg);             // F
@@ -536,9 +603,12 @@
     mergeConfig: mergeConfig,
     normalizeJobLevel: normalizeJobLevel,
     isSpecialImpact: isSpecialImpact,
+    scoredQuestions: scoredQuestions,
+    isSpecialImpactUnlocked: isSpecialImpactUnlocked,
     calculatePerformanceScore: calculatePerformanceScore,
     calculateKaranehScore: calculateKaranehScore,
     calculateSpecialImpact: calculateSpecialImpact,
+    specialImpactEntered: specialImpactEntered,
     calculateRawCoefficient: calculateRawCoefficient,
     getGradeScore: getGradeScore,
     calculateGradeImpact: calculateGradeImpact,

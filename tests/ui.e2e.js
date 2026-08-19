@@ -42,10 +42,13 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   check('no page errors on boot', pageErrors.length === 0, pageErrors.join(' | '));
 
   var navCount = await page.locator('.navitem').count();
-  check('all navigation entries render', navCount === 10, navCount + ' items');
+  var phaseCount = await page.locator('.navphase').count();
+  check('navigation is split into two phases', phaseCount === 2, phaseCount + ' phase headers');
+  check('all navigation entries render for the admin role', navCount === 11, navCount + ' items');
 
   console.log('\n== LOAD SAMPLE DATA ==');
-  /* Load through the app's own code path, then confirm it persisted. */
+  /* The workbook data goes in exactly as it stands — no fix-ups. The
+     special-impact gate is what makes it reproduce Excel. */
   await page.evaluate(function () {
     var s = window.SAMPLE_DATA, now = new Date().toISOString();
     var st = window.App.state;
@@ -56,11 +59,6 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
       var c = JSON.parse(JSON.stringify(e));
       c._key = 'q' + (i + 1); c.importedAt = now;
       c.hodComment = c.hodAdjustment != null ? 'از فایل مرجع' : '';
-      /* Conformance replay: employee 4's column-O formula in the workbook
-         ignored its own special-impact value. Feed the app what that formula
-         actually acted on so the browser can be held to Excel exactly.
-         See docs/05-ambiguities.md, AMB-01. */
-      if (c.employeeId === '4') { c.specialProject = null; c.specialImpactAmount = 0; }
       return c;
     });
     st.employees = s.employees.map(function (e) {
@@ -99,8 +97,26 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   check('KPI tiles render', kpiText.length >= 8, kpiText.length + ' tiles');
   var topbar = await page.locator('.topbar').textContent();
   check('top bar shows the budget', topbar.indexOf('100.00B') !== -1, topbar.replace(/\s+/g, ' ').trim());
-  var divRows = await page.locator('table.grid tbody tr').count();
-  check('per-division summary renders', divRows >= 8, divRows + ' divisions');
+  await page.waitForSelector('.chart svg', { timeout: 5000 });
+  var chartCount = await page.locator('.chart svg').count();
+  check('dashboard renders its charts', chartCount >= 5, chartCount + ' charts');
+  var marks = await page.locator('.chart .chart-mark').count();
+  check('charts draw real marks', marks > 20, marks + ' marks');
+  var legendItems = await page.locator('.chart-legend-item').count();
+  check('the status chart carries a legend', legendItems >= 3, legendItems + ' legend entries');
+  var unifiedRows = await page.locator('table.grid tbody tr').count();
+  check('unified table renders alongside the charts', unifiedRows > 20, unifiedRows + ' rows');
+  var facets = await page.locator('.table-toolbar select').count();
+  check('unified table exposes filters', facets >= 6, facets + ' filters');
+
+  /* Filtering the table must not change what the charts describe. */
+  await page.locator('.table-toolbar select').first().selectOption({ index: 1 });
+  await page.waitForTimeout(250);
+  var filtered = await page.locator('table.grid tbody tr').count();
+  check('a filter narrows the table', filtered < unifiedRows && filtered > 0,
+    unifiedRows + ' → ' + filtered);
+  await page.locator('.table-toolbar select').first().selectOption({ index: 0 });
+  await page.waitForTimeout(200);
 
   console.log('\n== PAYMENT TABLE vs EXCEL ==');
   await page.evaluate(function () { window.App.go('payment'); });
@@ -237,6 +253,227 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
     return window.App.validation.filter(function (i) { return i.code === 'BELOW_THRESHOLD'; }).length;
   });
   check('the 5 below-threshold employees are reported', belowThreshold === 5, String(belowThreshold));
+
+  console.log('\n== SPECIAL-IMPACT GATE ==');
+  var gate = await page.evaluate(function () {
+    var cfg = window.App.state.config;
+    var rows = window.App.result.rows;
+    var flagged = rows.filter(function (r) { return r.specialProject; });
+    return {
+      floor: cfg.specialImpactMinScore,
+      flagged: flagged.length,
+      blocked: rows.filter(function (r) { return r.specialImpactBlocked; }).length,
+      blockedIds: rows.filter(function (r) { return r.specialImpactBlocked; })
+        .map(function (r) { return r.employeeId; }),
+      /* the blocked employee must have entered 300 but applied 0 */
+      entered: (rows.filter(function (r) { return r.specialImpactBlocked; })[0] || {}).specialImpactEntered,
+      applied: (rows.filter(function (r) { return r.specialImpactBlocked; })[0] || {}).specialImpactValue
+    };
+  });
+  check('gate floor is configured', gate.floor === 100, String(gate.floor));
+  check('4 employees are flagged for special impact', gate.flagged === 4, String(gate.flagged));
+  check('the sub-threshold employee is blocked', gate.blocked === 1 && gate.blockedIds[0] === '4',
+    gate.blockedIds.join(','));
+  check('blocked employee records entered 300 but applied 0',
+    gate.entered === 300 && gate.applied === 0, gate.entered + ' → ' + gate.applied);
+
+  await page.evaluate(function () { window.App.go('questionnaires'); });
+  await page.waitForSelector('table.grid tbody tr');
+  var lockUi = await page.evaluate(function () {
+    /* find the blocked employee's row and read its special-impact cell */
+    var grid = window.App.grids.questionnaires;
+    grid.state.filter = '4';
+    grid.render();
+    var locks = document.querySelectorAll('table.grid tbody .locked-note').length;
+    grid.state.filter = '';
+    grid.render();
+    return locks;
+  });
+  check('the UI locks the special-impact control below the floor', lockUi > 0, lockUi + ' locked cells');
+
+  console.log('\n== QUESTIONNAIRE DESIGNER ==');
+  await page.evaluate(function () { window.App.go('designer'); });
+  await page.waitForSelector('.qrow');
+  var qrows = await page.locator('.qrow').count();
+  check('designer lists every question', qrows === 5, qrows + ' questions');
+  var sigShown = await page.locator('#main .mono').first().textContent();
+  check('designer shows the template signature', /^[0-9a-f]{8}$/.test(sigShown.trim()), sigShown.trim());
+
+  var weighted = await page.evaluate(function () {
+    var before = window.App.result.totals.sumRawCoefficient;
+    window.App.state.config.questions[0].weight = 3;
+    window.App.recalc();
+    var after = window.App.result.totals.sumRawCoefficient;
+    window.App.state.config.questions[0].weight = 1;
+    window.App.recalc();
+    return { before: before, after: after, restored: window.App.result.totals.sumRawCoefficient };
+  });
+  check('changing a question weight moves the score',
+    Math.abs(weighted.after - weighted.before) > 1,
+    weighted.before.toFixed(2) + ' → ' + weighted.after.toFixed(2));
+  check('restoring the weight restores the score',
+    Math.abs(weighted.restored - weighted.before) < 1e-9);
+
+  console.log('\n== TEMPLATE DOWNLOAD AND RE-IMPORT ==');
+  var tplDownload = page.waitForEvent('download', { timeout: 20000 });
+  await page.evaluate(function () {
+    window.App.state.employees = window.App.state.employees.slice(0, 6);
+    window.App.recalc();
+    document.querySelectorAll('#main button').forEach(function (b) {
+      if (b.textContent.indexOf('تمپلیت با فهرست پرسنل') !== -1) b.click();
+    });
+  });
+  var tplFile = path.join(downloadDir, (await tplDownload).suggestedFilename());
+  await (await tplDownload).saveAs(tplFile);
+  check('questionnaire template downloads', fs.existsSync(tplFile),
+    path.basename(tplFile) + ' (' + (fs.statSync(tplFile).size / 1024).toFixed(0) + ' KB)');
+
+  var XLSX0 = require(path.join(__dirname, '..', 'vendor', 'xlsx.full.min.js'));
+  var tplWb = XLSX0.read(fs.readFileSync(tplFile), { type: 'buffer' });
+  check('template carries the questionnaire sheet',
+    tplWb.SheetNames.indexOf('پرسشنامه کارانه تیمی') !== -1, tplWb.SheetNames.join(' | '));
+  check('template carries a hidden signature sheet',
+    tplWb.SheetNames.indexOf('_Template') !== -1);
+  var tplRaw = fs.readFileSync(tplFile).toString('latin1');
+  check('template answer cells are dropdowns', /<dataValidation type="list"/.test(tplRaw),
+    (tplRaw.match(/<dataValidation /g) || []).length + ' validations');
+  check('template freezes its header', /state="frozen"/.test(tplRaw));
+
+  var tplRows = XLSX0.utils.sheet_to_json(tplWb.Sheets['پرسشنامه کارانه تیمی'],
+    { header: 1, defval: null, blankrows: false });
+  var codeRow = tplRows.filter(function (r) { return r[0] === 'شماره پرسنلی'; })[0];
+  check('template header row uses short question codes',
+    codeRow && codeRow.indexOf('Q1') !== -1 && codeRow.indexOf('Q4') !== -1,
+    codeRow ? codeRow.slice(5, 11).join(',') : 'not found');
+
+  /* A template cut from a different design must be refused. */
+  var mismatch = await page.evaluate(function () {
+    var cfg = JSON.parse(JSON.stringify(window.App.state.config));
+    cfg.questions.push({ id: 'q9', text: 'سؤال تازه', weight: 1, scored: true });
+    var wb = window.Templates.buildQuestionnaireTemplate(cfg, [], { XLSX: window.XLSX });
+    var bytes = window.XLSX.write(wb, { type: 'array', bookType: 'xlsx', compression: false });
+    var back = window.XLSX.read(bytes, { type: 'array' });
+    var v = window.Templates.verifyAgainstTemplate(back, window.App.state.config, window.XLSX);
+    var same = window.Templates.verifyAgainstTemplate(
+      window.XLSX.read(window.XLSX.write(
+        window.Templates.buildQuestionnaireTemplate(window.App.state.config, [], { XLSX: window.XLSX }),
+        { type: 'array', bookType: 'xlsx', compression: false }), { type: 'array' }),
+      window.App.state.config, window.XLSX);
+    return { foreign: v, own: same };
+  });
+  check('a template from a different design is rejected',
+    mismatch.foreign.ok === false && mismatch.foreign.level === 'mismatch',
+    mismatch.foreign.level);
+  check('the rejection names the mismatch',
+    /مجموعه سؤالات/.test(mismatch.foreign.problems.join(' ')));
+  check('a template from the current design is accepted',
+    mismatch.own.ok === true && mismatch.own.level === 'match', mismatch.own.level);
+
+  console.log('\n== ROLE-BASED ACCESS ==');
+  var roleTest = await page.evaluate(function () {
+    var divisions = {};
+    window.App.result.rows.forEach(function (r) { if (r.division) divisions[r.division] = 1; });
+    var first = Object.keys(divisions)[0];
+    window.App.state.role = 'hod';
+    window.App.state.hodScope = [first];
+    window.App.recalc();
+    window.App.go('dashboard');
+    var navItems = document.querySelectorAll('.navitem').length;
+    var canSettings = window.App.go && (function () {
+      window.App.go('settings');
+      return window.App.view === 'settings';
+    }());
+    window.App.state.role = 'admin';
+    window.App.state.hodScope = [];
+    window.App.recalc();
+    return { division: first, navItems: navItems, reachedSettings: canSettings };
+  });
+  check('division head sees a reduced menu', roleTest.navItems < 11, roleTest.navItems + ' items');
+  check('division head cannot reach settings', roleTest.reachedSettings === false);
+
+  console.log('\n== PHASE GATE ==');
+  var gateTest = await page.evaluate(function () {
+    /* Break one answer so phase 1 has a blocking error. */
+    var q = window.App.state.questionnaires[0];
+    var keep = q.q1;
+    q.q1 = 'یک پاسخ نامعتبر';
+    window.App.recalc();
+    var blocked = window.App.validation.filter(function (i) {
+      return i.severity === 'err' && i.stage === 'data';
+    }).length;
+    window.App.go('hod');
+    var lockedView = document.querySelector('#main .alert.err') !== null;
+    q.q1 = keep;
+    window.App.recalc();
+    return { blocked: blocked, lockedView: lockedView, reopened: window.App.view };
+  });
+  check('an invalid answer blocks phase 1', gateTest.blocked > 0, gateTest.blocked + ' blockers');
+  check('HOD adjustments are locked while phase 1 is incomplete', gateTest.lockedView);
+
+  console.log('\n== PAYROLL-FORMAT EXPORT ==');
+  await page.evaluate(function () { window.App.go('dashboard'); });
+  await page.waitForSelector('#main button');
+  var payrollDl = page.waitForEvent('download', { timeout: 20000 });
+  await page.evaluate(function () {
+    document.querySelectorAll('#main button').forEach(function (b) {
+      if (b.textContent.indexOf('قالب حقوق و دستمزد') !== -1) b.click();
+    });
+  });
+  var payrollFile = path.join(downloadDir, (await payrollDl).suggestedFilename());
+  await (await payrollDl).saveAs(payrollFile);
+  var pwb = XLSX0.read(fs.readFileSync(payrollFile), { type: 'buffer' });
+  var prows = XLSX0.utils.sheet_to_json(pwb.Sheets[pwb.SheetNames[0]], { header: 1, defval: null });
+  var expectedHeaders = ['Emp No', 'Emp Status', 'First Name', 'Last Name'];
+  check('payroll export uses the payroll team column layout',
+    expectedHeaders.every(function (h, i) { return prows[0][i] === h; }),
+    prows[0].slice(0, 4).join(' , '));
+  var finalIdx = prows[0].indexOf('Final Karaneh');
+  check('payroll export has a Final Karaneh column', finalIdx > 0, 'index ' + finalIdx);
+  var paySum = 0, payRows = 0;
+  prows.slice(1).forEach(function (r) {
+    if (!r || !r[0] || r[0] === 'جمع') return;
+    payRows++;
+    paySum += Number(r[finalIdx]) || 0;
+  });
+  check('payroll export carries every employee', payRows === 100, payRows + ' rows');
+  check('payroll amounts sum to exactly the budget, in whole rial',
+    paySum === 100000000000, paySum.toLocaleString('en-US'));
+
+  console.log('\n== EXPORT BY MANAGEMENT LEVEL ==');
+  var byMgr = await page.evaluate(function () {
+    /* Give the master records managers so the split has something to group on. */
+    window.App.state.employees.forEach(function (e, i) {
+      e.directManager = 'مدیر ' + (i % 3 + 1);
+      e.managerLevel1 = 'معاون ' + (i % 2 + 1);
+    });
+    window.App.recalc();
+    return window.App.state.employees.length;
+  });
+  var mgrDl = page.waitForEvent('download', { timeout: 20000 });
+  await page.evaluate(function () { window.__runManagerExport(); });
+  var mgrFile = path.join(downloadDir, (await mgrDl).suggestedFilename());
+  await (await mgrDl).saveAs(mgrFile);
+  var mwb = XLSX0.read(fs.readFileSync(mgrFile), { type: 'buffer' });
+  check('per-manager workbook opens with an index sheet',
+    mwb.SheetNames[0] === 'فهرست', mwb.SheetNames.join(' | '));
+  check('per-manager workbook has one sheet per group',
+    mwb.SheetNames.length >= 4 && mwb.SheetNames.indexOf('مدیر 1') !== -1 &&
+    mwb.SheetNames.indexOf('مدیر 3') !== -1,
+    mwb.SheetNames.length + ' sheets: ' + mwb.SheetNames.join(' | '));
+  var mgrSum = 0;
+  mwb.SheetNames.slice(1).forEach(function (n) {
+    var rs = XLSX0.utils.sheet_to_json(mwb.Sheets[n], { header: 1, defval: null });
+    var fi = rs[0].indexOf('Final Karaneh');
+    rs.slice(1).forEach(function (r) {
+      if (r && r[0] && r[0] !== 'جمع') mgrSum += Number(r[fi]) || 0;
+    });
+  });
+  check('per-manager sheets sum to exactly the budget',
+    mgrSum === 100000000000, mgrSum.toLocaleString('en-US'));
+  var idxRows = XLSX0.utils.sheet_to_json(mwb.Sheets['فهرست'], { header: 1, defval: null });
+  var idxTotal = idxRows.filter(function (r) { return r && r[0] === 'جمع کل'; })[0];
+  check('index sheet totals every group', idxTotal && Math.abs(idxTotal[2] - 100000000000) < 200,
+    idxTotal ? Number(idxTotal[2]).toLocaleString('en-US') : 'missing');
 
   console.log('\n== EXCEL EXPORT ==');
   var downloadPromise = page.waitForEvent('download', { timeout: 20000 });

@@ -15,6 +15,8 @@
   var Engine = window.KaranehEngine;
   var Store  = window.DataStore;
   var Import = window.ExcelImport;
+  var Tpl    = window.Templates;
+  var Chart  = window.Charts;
   var U      = window.UI;
   var el = U.el;
 
@@ -30,22 +32,73 @@
   /* ======================================================================
    * Navigation definition
    * ====================================================================*/
+  /* The system is two processes, not one long menu: everything that gets the
+     answers in, then everything that turns them into money. The split is what
+     lets a division head be handed the second half without the first. */
   var NAV = [
-    { group: 'مرور کلی' },
-    { id: 'dashboard',      icon: '▦', label: 'داشبورد' },
-    { group: 'ورود اطلاعات' },
-    { id: 'employees',      icon: '👤', label: 'اطلاعات پرسنل' },
-    { id: 'import',         icon: '📥', label: 'ورود پرسشنامه‌ها' },
-    { id: 'questionnaires', icon: '📝', label: 'مدیریت پرسشنامه' },
-    { group: 'محاسبات' },
-    { id: 'payment',        icon: '💰', label: 'روش پرداخت کارانه' },
-    { id: 'hod',            icon: '✍️', label: 'تغییرات معاون بخش' },
-    { group: 'کنترل و خروجی' },
+    { phase: 1, label: 'ورود پرسشنامه و پاسخ سؤالات' },
+    { id: 'designer',       icon: '🧩', label: 'طراحی پرسشنامه', adminOnly: true },
+    { id: 'employees',      icon: '👤', label: 'اطلاعات پرسنل',   adminOnly: true },
+    { id: 'import',         icon: '📥', label: 'ورود پرسشنامه‌ها', adminOnly: true },
+    { id: 'questionnaires', icon: '📝', label: 'مدیریت پرسشنامه', adminOnly: true },
     { id: 'validation',     icon: '🛡', label: 'مرکز اعتبارسنجی' },
+    { phase: 2, label: 'محاسبه کارانه و تغییرات معاون بخش' },
+    { id: 'dashboard',      icon: '▦',  label: 'داشبورد' },
+    { id: 'payment',        icon: '💰', label: 'روش پرداخت کارانه' },
+    { id: 'hod',            icon: '✍️', label: 'تغییرات معاون بخش', needsPhase1: true },
     { id: 'reports',        icon: '📤', label: 'گزارش و خروجی' },
+    { group: 'سیستم' },
     { id: 'audit',          icon: '🧾', label: 'ردیابی تغییرات' },
-    { id: 'settings',       icon: '⚙️', label: 'تنظیمات' }
+    { id: 'settings',       icon: '⚙️', label: 'تنظیمات', adminOnly: true }
   ];
+
+  var ROLES = {
+    admin: { label: 'مدیر سیستم / منابع انسانی', icon: '🛠' },
+    hod:   { label: 'معاون بخش', icon: '✍️' }
+  };
+
+  function role() { return (App.state && App.state.role) || 'admin'; }
+  function isAdmin() { return role() === 'admin'; }
+
+  /** Divisions a division head may act on; empty means the whole organisation. */
+  function roleScope() {
+    var sc = (App.state && App.state.hodScope) || [];
+    return sc.length ? sc : null;
+  }
+
+  function inScopeForRole(row) {
+    if (isAdmin()) return true;
+    var sc = roleScope();
+    return !sc || sc.indexOf(row.division) !== -1;
+  }
+
+  function canOpen(view) {
+    var item = null;
+    NAV.forEach(function (n) { if (n.id === view) item = n; });
+    if (!item) return true;
+    if (item.adminOnly && !isAdmin()) return false;
+    if (item.needsPhase1 && !phase1Ready()) return false;
+    return true;
+  }
+
+  /**
+   * Phase 1 is complete when nothing is left that would make a payment number
+   * wrong: unresolved duplicates, unusable answers, or an unmapped job level.
+   * Payment-stage problems (a missing HOD comment, a negative payout) are not
+   * counted here — they belong to phase 2.
+   */
+  function phase1Ready() {
+    if (!App.state || !App.state.questionnaires.length) return false;
+    return (App.validation || []).filter(function (i) {
+      return i.severity === 'err' && i.stage === 'data';
+    }).length === 0;
+  }
+
+  function phase1Blockers() {
+    return (App.validation || []).filter(function (i) {
+      return i.severity === 'err' && i.stage === 'data';
+    });
+  }
 
   /* ======================================================================
    * Boot
@@ -55,6 +108,9 @@
       App.state = saved || freshState();
       if (!App.state.config) App.state.config = defaultConfig();
       if (!App.state.columnMappings) App.state.columnMappings = cloneMappings();
+      if (!App.state.role) App.state.role = 'admin';
+      if (!App.state.hodScope) App.state.hodScope = [];
+      migrateConfig(App.state.config);
       App._keySeq = App.state.questionnaires.length;
       renderShell();
       recalc();
@@ -87,6 +143,28 @@
     return JSON.parse(JSON.stringify(Import.DEFAULT_MAPPINGS));
   }
 
+  /**
+   * Bring a stored config forward. Earlier versions listed scored questions as
+   * bare ids with no text or weight; rebuild the richer shape from whatever is
+   * there so a saved session keeps working after an upgrade.
+   */
+  function migrateConfig(cfg) {
+    if (!cfg) return;
+    if (!cfg.questions || !cfg.questions.length) {
+      var ids = cfg.scoredQuestions || ['q1', 'q2', 'q3', 'q4'];
+      cfg.questions = Engine.DEFAULT_CONFIG.questions.filter(function (q) {
+        return ids.indexOf(q.id) !== -1 || q.scored === false;
+      }).map(function (q) { return JSON.parse(JSON.stringify(q)); });
+    }
+    if (cfg.specialImpactMinScore === undefined) {
+      cfg.specialImpactMinScore = Engine.DEFAULT_CONFIG.specialImpactMinScore;
+    }
+    if (!cfg.specialImpactQuestion) {
+      cfg.specialImpactQuestion = Engine.DEFAULT_CONFIG.specialImpactQuestion;
+    }
+    delete cfg.scoredQuestions;
+  }
+
   function save() {
     return Store.write(App.state).catch(function (e) {
       U.toast(e.message || 'ذخیره‌سازی ناموفق بود.', 'err', 6000);
@@ -97,18 +175,18 @@
    * The single recalculation path
    * ====================================================================*/
   function recalc(options) {
+    var questionIds = (App.state.config.questions || []).map(function (x) { return x.id; });
     var records = App.state.questionnaires.map(function (q) {
       var master = employeeById(q.employeeId);
       /* Master data wins for organisational attributes; the questionnaire
          wins for answers. A job level typed into a team file is a fallback
          only, because HR's master file is the system of record. */
-      return {
+      var rec = {
         employeeId:    q.employeeId,
         fullName:      q.fullName || (master && master.fullName) || '',
         division:      (master && master.division) || q.division || '',
         positionTitle: (master && master.positionTitle) || q.positionTitle || '',
         jobLevel:      (master && master.jobLevel) || q.jobLevel || '',
-        q1: q.q1, q2: q.q2, q3: q.q3, q4: q.q4, q5: q.q5,
         specialProject:      q.specialProject,
         specialImpactAmount: q.specialImpactAmount,
         hodAdjustment:       q.hodAdjustment,
@@ -117,6 +195,10 @@
         sourceFile:          q.sourceFile,
         _key:                q._key
       };
+      /* Answers travel by the ids the designer defines, so adding a question
+         needs no change here. */
+      questionIds.forEach(function (id) { rec[id] = q[id]; });
+      return rec;
     });
 
     App.result = Engine.calculate(records, App.state.config);
@@ -169,9 +251,21 @@
       (qById[q.employeeId] || (qById[q.employeeId] = [])).push(q);
     });
 
+    /* `stage` decides which half of the process an issue belongs to: 'data'
+       problems must be cleared before the calculation phase opens at all,
+       'payment' problems are raised during it. */
+    var STAGE = {
+      NO_QUESTIONNAIRE: 'data', NO_MASTER: 'data', DUPLICATE: 'data',
+      INCOMPLETE_ANSWERS: 'data', UNMAPPED_JL: 'data', MISSING_JL: 'data',
+      BELOW_THRESHOLD: 'data', SPECIAL_BLOCKED: 'data', SPECIAL_NO_AMOUNT: 'data',
+      NO_MASTER_DATA: 'data', NO_QUESTIONNAIRES: 'data', TEMPLATE_DRIFT: 'data',
+      MISSING_HOD_COMMENT: 'payment', NEGATIVE_OVERRIDE: 'payment',
+      NEGATIVE_PAYOUT: 'payment', BUDGET_OVERRUN: 'payment'
+    };
+
     function add(severity, code, title, employeeId, employeeName, detail) {
       issues.push({
-        severity: severity, code: code, title: title,
+        severity: severity, code: code, title: title, stage: STAGE[code] || 'data',
         employeeId: employeeId || '', employeeName: employeeName || '', detail: detail || ''
       });
     }
@@ -234,7 +328,12 @@
             r.employeeId, r.fullName,
             'تغییرات معاون بخش سهم سایر افراد را منفی کرده است: ' + U.money(r.finalKaraneh));
       }
-      if (r.specialProject && !(r.specialImpactValue > 0)) {
+      if (r.specialImpactBlocked) {
+        add('info', 'SPECIAL_BLOCKED', 'اثرگذاری ویژه ثبت شده اما امتیاز نگرفته',
+            r.employeeId, r.fullName,
+            'امتیاز کارانه ' + U.score(r.performanceKaraneh, 2) + ' کمتر از حد نصاب ' +
+            App.state.config.specialImpactMinScore + ' است.');
+      } else if (r.specialProject && !(r.specialImpactValue > 0)) {
         add('warn', 'SPECIAL_NO_AMOUNT', 'اثرگذاری ویژه بدون امتیاز',
             r.employeeId, r.fullName, '');
       }
@@ -257,11 +356,12 @@
 
   function describeMissingAnswers(r) {
     var missing = [], scale = App.state.config.answerScale;
-    App.state.config.scoredQuestions.forEach(function (k, i) {
-      var v = r[k];
-      if (v === null || v === undefined || v === '') missing.push('Q' + (i + 1) + ' خالی');
+    Engine.scoredQuestions(App.state.config).forEach(function (q) {
+      var v = r[q.id];
+      var code = q.id.toUpperCase();
+      if (v === null || v === undefined || v === '') missing.push(code + ' خالی');
       else if (typeof v !== 'number' && scale[String(v).trim()] === undefined) {
-        missing.push('Q' + (i + 1) + ' نامعتبر («' + v + '»)');
+        missing.push(code + ' نامعتبر («' + v + '»)');
       }
     });
     return missing.join('، ');
@@ -289,6 +389,11 @@
     root.appendChild(el('div', { class: 'topbar' }, [
       el('span', { class: 'brand', text: 'سامانه مدیریت کارانه' }),
       el('span', { class: 'period', id: 'periodChip', text: App.state.period }),
+      el('button', {
+        class: 'role-pill', id: 'rolePill',
+        title: 'تغییر سطح دسترسی',
+        onclick: function () { openRolePicker(); }
+      }, [document.createTextNode(ROLES[role()].icon + '  ' + ROLES[role()].label)]),
       el('div', { class: 'spacer' }),
       el('div', { class: 'topstat', id: 'topBudget' }),
       el('div', { class: 'sep' }),
@@ -310,12 +415,23 @@
     if (!sidebar) return;
     U.clear(sidebar);
     NAV.forEach(function (n) {
+      if (n.phase) {
+        sidebar.appendChild(el('div', { class: 'navphase' }, [
+          el('span', { class: 'n', text: String(n.phase) }),
+          el('span', { text: n.label })
+        ]));
+        return;
+      }
       if (n.group) { sidebar.appendChild(el('div', { class: 'navgroup', text: n.group })); return; }
+      if (n.adminOnly && !isAdmin()) return;
+      var locked = n.needsPhase1 && !phase1Ready();
       var badge = null;
       if (n.id === 'validation') {
         var errs = issueCount('err'), warns = issueCount('warn');
         if (errs) badge = el('span', { class: 'badge err', text: String(errs) });
         else if (warns) badge = el('span', { class: 'badge warn', text: String(warns) });
+      } else if (locked) {
+        badge = el('span', { class: 'badge warn', text: '🔒' });
       } else if (n.id === 'questionnaires') {
         badge = el('span', { class: 'badge', text: String(App.state.questionnaires.length) });
       } else if (n.id === 'employees') {
@@ -325,14 +441,24 @@
         if (ov) badge = el('span', { class: 'badge', text: String(ov) });
       }
       sidebar.appendChild(el('button', {
-        class: 'navitem' + (App.view === n.id ? ' active' : ''),
-        onclick: function () { go(n.id); }
+        class: 'navitem' + (App.view === n.id ? ' active' : '') + (locked ? ' locked' : ''),
+        title: locked ? 'تا رفع خطاهای مرحلهٔ ۱ در دسترس نیست' : '',
+        onclick: function () {
+          if (locked) {
+            U.toast('ابتدا باید خطاهای مرحلهٔ ۱ در مرکز اعتبارسنجی برطرف شوند.', 'warn', 5000);
+            go('validation');
+            return;
+          }
+          go(n.id);
+        }
       }, [
         el('span', { class: 'ico', text: n.icon }),
         el('span', { text: n.label }),
         badge
       ]));
     });
+    var pill = document.getElementById('rolePill');
+    if (pill) pill.textContent = ROLES[role()].icon + '  ' + ROLES[role()].label;
     renderTopStats();
   }
 
@@ -362,6 +488,7 @@
   App.save = save;
 
   function go(view) {
+    if (!canOpen(view)) view = isAdmin() ? 'validation' : 'dashboard';
     App.view = view;
     renderNav();
     renderView();
@@ -374,8 +501,116 @@
     var main = document.getElementById('main');
     if (!main) return;
     U.clear(main);
+    var banner = phaseBanner(App.view);
+    if (banner) main.appendChild(banner);
     var fn = VIEWS[App.view] || VIEWS.dashboard;
     fn(main);
+  }
+
+  /**
+   * Switching role changes what the sidebar offers and, for a division head,
+   * narrows every table to their own people. It is a workflow control, not a
+   * security boundary — all the data still lives in this browser.
+   */
+  function openRolePicker() {
+    var divisions = {};
+    App.state.employees.forEach(function (e) { if (e.division) divisions[e.division] = 1; });
+    App.state.questionnaires.forEach(function (q) { if (q.division) divisions[q.division] = 1; });
+    var list = Object.keys(divisions).sort(function (a, b) { return a.localeCompare(b, 'fa'); });
+
+    var chosenRole = role();
+    var scope = (App.state.hodScope || []).slice();
+
+    var scopeBox = el('div', { style: 'margin-top:10px' });
+    function renderScope() {
+      U.clear(scopeBox);
+      if (chosenRole !== 'hod') return;
+      scopeBox.appendChild(el('div', { class: 'small muted mb',
+        text: 'واحدهایی که این معاون بخش مسئول آن‌هاست. اگر هیچ‌کدام انتخاب نشود، کل سازمان در دسترس خواهد بود.' }));
+      if (!list.length) {
+        scopeBox.appendChild(el('div', { class: 'small muted', text: 'هنوز واحدی در داده‌ها وجود ندارد.' }));
+        return;
+      }
+      list.forEach(function (d) {
+        var cb = el('input', { type: 'checkbox' });
+        cb.checked = scope.indexOf(d) !== -1;
+        cb.addEventListener('change', function () {
+          if (cb.checked) { if (scope.indexOf(d) === -1) scope.push(d); }
+          else scope = scope.filter(function (x) { return x !== d; });
+        });
+        scopeBox.appendChild(el('label', { class: 'checkline' }, [cb, el('span', { text: d })]));
+      });
+    }
+
+    var body = el('div', {});
+    Object.keys(ROLES).forEach(function (key) {
+      var radio = el('input', { type: 'radio', name: 'role' });
+      radio.checked = key === chosenRole;
+      radio.addEventListener('change', function () { chosenRole = key; renderScope(); });
+      body.appendChild(el('label', {
+        class: 'checkline',
+        style: 'border:1px solid var(--border);border-radius:7px;padding:9px 11px;margin-bottom:8px'
+      }, [
+        radio,
+        el('div', {}, [
+          el('b', { text: ROLES[key].icon + '  ' + ROLES[key].label }),
+          el('div', { class: 'small muted', text: key === 'admin'
+            ? 'دسترسی کامل: طراحی پرسشنامه، ورود اطلاعات، محاسبات و تنظیمات.'
+            : 'فقط مرحلهٔ ۲: مشاهدهٔ محاسبات و تعیین مبلغ برای پرسنل واحدهای خود.' })
+        ])
+      ]));
+    });
+    body.appendChild(scopeBox);
+    renderScope();
+
+    U.modal({
+      title: 'سطح دسترسی', size: 'narrow', content: body,
+      buttons: [
+        { label: 'اعمال', kind: 'primary', onClick: function () {
+          var oldRole = App.state.role;
+          App.state.role = chosenRole;
+          App.state.hodScope = chosenRole === 'hod' ? scope : [];
+          Store.audit(App.state, {
+            entity: 'access', field: 'role', oldValue: oldRole, newValue: chosenRole,
+            reason: chosenRole === 'hod' && scope.length
+              ? 'محدود به واحدهای: ' + scope.join('، ') : 'تغییر سطح دسترسی'
+          });
+          save().then(function () {
+            renderShell();
+            go(canOpen(App.view) ? App.view : (chosenRole === 'hod' ? 'dashboard' : 'validation'));
+            U.toast('سطح دسترسی به «' + ROLES[chosenRole].label + '» تغییر کرد.', 'ok');
+          });
+        } },
+        { label: 'انصراف' }
+      ]
+    });
+  }
+
+  /** Banner naming the phase the current view belongs to. */
+  function phaseBanner(view) {
+    var current = null, phase = null;
+    NAV.forEach(function (n) {
+      if (n.phase) phase = n;
+      if (n.id === view) current = phase;
+    });
+    if (!current) return null;
+    var blockers = phase1Blockers().length;
+    return el('div', { class: 'phase-banner' }, [
+      el('span', { class: 'num', text: String(current.phase) }),
+      el('span', {}, [
+        el('b', { text: 'مرحلهٔ ' + current.phase + ' — ' + current.label })
+      ]),
+      el('div', { class: 'spacer' }),
+      current.phase === 1
+        ? el('span', {
+            class: 'chip ' + (phase1Ready() ? 'ok' : 'warn'),
+            text: phase1Ready() ? 'آمادهٔ ورود به مرحلهٔ ۲' : blockers + ' مورد باز'
+          })
+        : el('span', {
+            class: 'chip ' + (phase1Ready() ? 'ok' : 'err'),
+            text: phase1Ready() ? 'مرحلهٔ ۱ تکمیل شده' : 'مرحلهٔ ۱ هنوز کامل نیست'
+          })
+    ]);
   }
 
   function head(title, subtitle, actions) {
@@ -392,126 +627,615 @@
   var VIEWS = {};
 
   /* ======================================================================
+   * VIEW — Questionnaire designer
+   * ====================================================================*/
+  VIEWS.designer = function (main) {
+    var cfg = App.state.config;
+
+    main.appendChild(head('طراحی پرسشنامه',
+      'متن سؤالات، وزن آن‌ها، مقیاس پاسخ و شرط سؤال اثرگذاری ویژه از اینجا تعیین می‌شود. ' +
+      'تمپلیت Excel و کل محاسبات بر همین اساس ساخته می‌شوند.',
+      [
+        btn('دانلود تمپلیت پرسشنامه', function () { downloadQuestionnaireTemplate(); }, 'primary'),
+        btn('بازنشانی به پرسشنامه مرجع', function () { resetQuestionnaire(); }, 'danger')
+      ]));
+
+    if (App.state.questionnaires.length) {
+      main.appendChild(U.alert('warn', 'پرسشنامه‌های تکمیل‌شده در سیستم وجود دارد',
+        'تغییر مجموعه سؤالات باعث می‌شود فایل‌های تکمیل‌شدهٔ قبلی با طراحی جدید هماهنگ نباشند. ' +
+        'تغییر متن یا وزن سؤالات موجود بی‌خطر است؛ افزودن یا حذف سؤال نیازمند توزیع مجدد تمپلیت است.'));
+    }
+
+    /* ---- questions ---- */
+    var listBox = el('div', {});
+    function renderQuestions() {
+      U.clear(listBox);
+      var scoredCount = Engine.scoredQuestions(cfg).length;
+      var totalWeight = 0;
+      Engine.scoredQuestions(cfg).forEach(function (q) { totalWeight += Number(q.weight) || 0; });
+
+      cfg.questions.forEach(function (q, idx) {
+        var scored = q.scored !== false;
+        var row = el('div', { class: 'qrow' + (scored ? '' : ' unscored') });
+
+        var ta = el('textarea', { class: 'editable' });
+        ta.value = q.text || '';
+        ta.addEventListener('change', function () {
+          if (ta.value.trim() === q.text) return;
+          auditConfig('question.' + q.id + '.text', q.text, ta.value.trim());
+          q.text = ta.value.trim();
+          save(); recalc();
+        });
+
+        var weight = el('input', { type: 'number', class: 'editable', step: '0.5', min: '0' });
+        weight.value = q.weight === undefined ? 1 : q.weight;
+        weight.disabled = !scored;
+        weight.addEventListener('change', function () {
+          var v = Number(weight.value);
+          if (!isFinite(v) || v < 0) { weight.value = q.weight; return; }
+          auditConfig('question.' + q.id + '.weight', q.weight, v);
+          q.weight = v;
+          save(); recalc();
+        });
+
+        var scoredCb = el('input', { type: 'checkbox' });
+        scoredCb.checked = scored;
+        scoredCb.addEventListener('change', function () {
+          if (!scoredCb.checked && scoredCount <= 1) {
+            U.toast('حداقل یک سؤال باید در محاسبه وارد شود.', 'err');
+            scoredCb.checked = true; return;
+          }
+          auditConfig('question.' + q.id + '.scored', scored, scoredCb.checked);
+          q.scored = scoredCb.checked;
+          if (q.scored && !q.weight) q.weight = 1;
+          if (!q.scored) q.weight = 0;
+          syncQuestionCount();
+          save(); recalc();
+        });
+
+        row.appendChild(el('div', { class: 'qhead' }, [
+          el('span', { class: 'code', text: q.id.toUpperCase() }),
+          scored
+            ? el('span', { class: 'chip ok', text: 'در محاسبه' })
+            : el('span', { class: 'chip', text: 'فقط اطلاعاتی' }),
+          scored && totalWeight
+            ? el('span', { class: 'chip info',
+                text: 'سهم ' + ((Number(q.weight) || 0) / totalWeight * 100).toFixed(0) + '٪' })
+            : null,
+          el('div', { class: 'spacer' }),
+          el('button', { class: 'btn sm', text: '↑', title: 'انتقال به بالا',
+            disabled: idx === 0 ? 'disabled' : null,
+            onclick: function () { moveQuestion(idx, -1); } }),
+          el('button', { class: 'btn sm', text: '↓', title: 'انتقال به پایین',
+            disabled: idx === cfg.questions.length - 1 ? 'disabled' : null,
+            onclick: function () { moveQuestion(idx, 1); } }),
+          el('button', { class: 'btn sm danger', text: 'حذف',
+            onclick: function () { removeQuestion(q); } })
+        ]));
+        row.appendChild(ta);
+        row.appendChild(el('div', { class: 'qmeta' }, [
+          el('label', {}, [scoredCb, el('span', { text: 'در محاسبهٔ امتیاز عملکرد وارد شود' })]),
+          el('label', {}, [el('span', { text: 'وزن' }), weight])
+        ]));
+        listBox.appendChild(row);
+      });
+
+      listBox.appendChild(el('div', { style: 'display:flex;gap:8px;margin-top:4px' }, [
+        btn('＋ افزودن سؤال', function () { addQuestion(); }, 'primary')
+      ]));
+
+      listBox.appendChild(el('div', { class: 'small muted', style: 'margin-top:9px' }, [
+        document.createTextNode('امتیاز عملکرد = میانگین وزنی ' + scoredCount +
+          ' سؤال محاسباتی، در بازهٔ ۱ تا ۵. عدد کارانه = امتیاز × ' +
+          cfg.maxPerformanceScore + ' ÷ ' + cfg.questionCount + '.')
+      ]));
+    }
+    renderQuestions();
+    main.appendChild(U.card('سؤالات عملکرد', listBox,
+      { hint: 'ستون‌های F تا J شیت مرجع' }));
+
+    /* ---- special impact question ---- */
+    var siText = el('textarea', { class: 'editable', style: 'width:100%;min-height:52px' });
+    siText.value = cfg.specialImpactQuestion || '';
+    siText.addEventListener('change', function () {
+      auditConfig('specialImpactQuestion', cfg.specialImpactQuestion, siText.value.trim());
+      cfg.specialImpactQuestion = siText.value.trim();
+      save();
+    });
+
+    var siMin = el('input', { type: 'number', class: 'editable', step: '5', style: 'width:100%' });
+    siMin.value = cfg.specialImpactMinScore;
+    siMin.addEventListener('change', function () {
+      var v = Number(siMin.value);
+      if (!isFinite(v) || v < 0) { siMin.value = cfg.specialImpactMinScore; return; }
+      setConfig('specialImpactMinScore', v);
+    });
+
+    var siAmount = el('input', { type: 'number', class: 'editable', step: '10', style: 'width:100%' });
+    siAmount.value = cfg.specialImpactAmount;
+    siAmount.addEventListener('change', function () {
+      var v = Number(siAmount.value);
+      if (!isFinite(v)) { siAmount.value = cfg.specialImpactAmount; return; }
+      setConfig('specialImpactAmount', v);
+    });
+
+    /* How many people the current gate would actually let through. */
+    var eligibleForSpecial = App.result.rows.filter(function (r) {
+      return r.inScope && r.specialImpactUnlocked;
+    }).length;
+    var blocked = App.result.rows.filter(function (r) { return r.specialImpactBlocked; }).length;
+
+    main.appendChild(U.card('سؤال اثرگذاری ویژه', el('div', {}, [
+      el('label', { class: 'field' }, [el('span', { text: 'متن سؤال' }), siText]),
+      el('div', { class: 'form-grid' }, [
+        el('label', { class: 'field' }, [
+          el('span', { html: 'حداقل امتیاز کارانه برای فعال شدن این سؤال ' +
+            '<span class="muted small">— پاسخ به آن زیر این عدد امتیازی نمی‌گیرد</span>' }),
+          siMin
+        ]),
+        el('label', { class: 'field' }, [
+          el('span', { html: 'امتیاز اثرگذاری ویژه <span class="muted small">— ستون N</span>' }),
+          siAmount
+        ])
+      ]),
+      App.result.totals.inScopeCount
+        ? U.alert('info', 'اثر حد نصاب فعلی',
+            eligibleForSpecial + ' نفر از ' + App.result.totals.inScopeCount +
+            ' نفر امتیاز کارانه‌شان به حد نصاب ' + cfg.specialImpactMinScore +
+            ' می‌رسد و می‌توانند امتیاز اثرگذاری ویژه بگیرند.' +
+            (blocked ? ' هم‌اکنون ' + blocked + ' نفر با وجود ثبت اثرگذاری ویژه، امتیازی دریافت نمی‌کنند.' : ''))
+        : null
+    ]), { hint: 'ستون‌های M و N شیت مرجع' }));
+
+    /* ---- answer scale ---- */
+    var scaleBody = el('div', {});
+    function renderScale() {
+      U.clear(scaleBody);
+      var st = el('table', { class: 'grid' });
+      st.appendChild(el('thead', {}, [el('tr', {}, [
+        el('th', { text: 'متن پاسخ' }), el('th', { text: 'امتیاز' }), el('th', { text: '' })
+      ])]));
+      var stb = el('tbody');
+      Object.keys(cfg.answerScale).forEach(function (k) {
+        var inp = el('input', { type: 'number', class: 'cell', step: '1' });
+        inp.value = cfg.answerScale[k];
+        inp.addEventListener('change', function () {
+          auditConfig('answerScale.' + k, cfg.answerScale[k], Number(inp.value));
+          cfg.answerScale[k] = Number(inp.value);
+          save(); recalc();
+        });
+        stb.appendChild(el('tr', {}, [
+          el('td', { text: k }), el('td', {}, [inp]),
+          el('td', {}, [el('button', { class: 'btn sm danger', text: 'حذف', onclick: function () {
+            if (Object.keys(cfg.answerScale).length <= 2) {
+              U.toast('حداقل دو گزینه پاسخ لازم است.', 'err'); return;
+            }
+            auditConfig('answerScale.' + k, cfg.answerScale[k], '(حذف شد)');
+            delete cfg.answerScale[k];
+            save(); recalc();
+          } })])
+        ]));
+      });
+      st.appendChild(stb);
+      scaleBody.appendChild(st);
+
+      var preview = el('div', { class: 'scale-preview' });
+      Object.keys(cfg.answerScale).forEach(function (k) {
+        preview.appendChild(el('span', { html: U.esc(k) + ' <b>' + cfg.answerScale[k] + '</b>' }));
+      });
+      scaleBody.appendChild(preview);
+
+      var newAns = el('input', { type: 'text', placeholder: 'متن پاسخ', style: 'width:170px' });
+      var newVal = el('input', { type: 'number', placeholder: 'امتیاز', style: 'width:95px' });
+      scaleBody.appendChild(el('div', { style: 'display:flex;gap:7px;margin-top:11px' }, [
+        newAns, newVal,
+        btn('افزودن', function () {
+          var k = newAns.value.trim(), v = Number(newVal.value);
+          if (!k || !isFinite(v)) { U.toast('متن پاسخ و امتیاز را وارد کنید.', 'err'); return; }
+          cfg.answerScale[k] = v;
+          auditConfig('answerScale.' + k, '(جدید)', v);
+          newAns.value = ''; newVal.value = '';
+          save(); recalc(); renderScale();
+        }, 'primary')
+      ]));
+    }
+    renderScale();
+    main.appendChild(U.card('نمودار ارزیابی — نگاشت پاسخ به امتیاز', scaleBody,
+      { hint: 'جدول Data!H:I — این گزینه‌ها در تمپلیت Excel به فهرست کشویی تبدیل می‌شوند' }));
+
+    /* ---- template ---- */
+    main.appendChild(U.card('تمپلیت Excel', el('div', {}, [
+      el('p', { class: 'small muted', style: 'margin-top:0',
+        text: 'تمپلیت دقیقاً بر اساس طراحی بالا ساخته می‌شود: هر سؤال یک ستون، ' +
+              'گزینه‌های پاسخ به‌صورت فهرست کشویی، و یک امضای پنهان که هنگام بازگشت فایل ' +
+              'با طراحی فعلی مقایسه می‌شود.' }),
+      el('dl', { class: 'kv', style: 'margin-bottom:12px' }, [
+        el('dt', { text: 'امضای طراحی فعلی' }),
+        el('dd', { class: 'mono', text: Tpl.signature(cfg) }),
+        el('dt', { text: 'سؤالات' }),
+        el('dd', { class: 'mono', text: Tpl.describe(cfg).questionIds }),
+        el('dt', { text: 'گزینه‌های پاسخ' }),
+        el('dd', { text: Tpl.describe(cfg).options.split('|').join('، ') })
+      ]),
+      el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, [
+        btn('📄 تمپلیت خالی', function () { downloadQuestionnaireTemplate({ prefill: false }); }),
+        btn('👥 تمپلیت با فهرست پرسنل', function () { downloadQuestionnaireTemplate({ prefill: true }); }, 'primary'),
+        btn('🏢 تمپلیت به تفکیک واحد', function () { downloadQuestionnaireTemplatePerDivision(); })
+      ])
+    ])));
+  };
+
+  function syncQuestionCount() {
+    var n = Engine.scoredQuestions(App.state.config).length;
+    if (n && App.state.config.questionCount !== n) {
+      auditConfig('questionCount', App.state.config.questionCount, n);
+      App.state.config.questionCount = n;
+    }
+  }
+
+  function nextQuestionId(cfg) {
+    var n = 1;
+    while (cfg.questions.some(function (q) { return q.id === 'q' + n; })) n++;
+    return 'q' + n;
+  }
+
+  function addQuestion() {
+    var cfg = App.state.config;
+    var id = nextQuestionId(cfg);
+    cfg.questions.push({ id: id, text: 'متن سؤال جدید', weight: 1, scored: true });
+    auditConfig('question.' + id, '(جدید)', 'افزوده شد');
+    syncQuestionCount();
+    save().then(function () { recalc(); U.toast('سؤال ' + id.toUpperCase() + ' اضافه شد.', 'ok'); });
+  }
+
+  function removeQuestion(q) {
+    var cfg = App.state.config;
+    if (Engine.scoredQuestions(cfg).length <= 1 && q.scored !== false) {
+      U.toast('حداقل یک سؤال محاسباتی باید باقی بماند.', 'err');
+      return;
+    }
+    var answered = App.state.questionnaires.filter(function (r) {
+      return r[q.id] !== undefined && r[q.id] !== null && r[q.id] !== '';
+    }).length;
+    U.confirm('سؤال ' + q.id.toUpperCase() + ' حذف شود؟' +
+      (answered ? '\n' + answered + ' پاسخ ثبت‌شده برای این سؤال از محاسبات خارج می‌شود.' : ''),
+      { danger: true, confirmLabel: 'حذف' }).then(function (ok) {
+      if (!ok) return;
+      cfg.questions = cfg.questions.filter(function (x) { return x !== q; });
+      auditConfig('question.' + q.id, q.text, '(حذف شد)');
+      syncQuestionCount();
+      save().then(function () { recalc(); U.toast('سؤال حذف شد.', 'ok'); });
+    });
+  }
+
+  function moveQuestion(idx, delta) {
+    var qs = App.state.config.questions;
+    var to = idx + delta;
+    if (to < 0 || to >= qs.length) return;
+    var tmp = qs[idx]; qs[idx] = qs[to]; qs[to] = tmp;
+    auditConfig('questionOrder', idx, to);
+    save().then(function () { recalc(); });
+  }
+
+  function resetQuestionnaire() {
+    U.confirm('طراحی پرسشنامه به حالت فایل مرجع Merit بازگردد؟',
+      { danger: true, confirmLabel: 'بازنشانی' }).then(function (ok) {
+      if (!ok) return;
+      var cfg = App.state.config;
+      cfg.questions = JSON.parse(JSON.stringify(Engine.DEFAULT_CONFIG.questions));
+      cfg.answerScale = JSON.parse(JSON.stringify(Engine.DEFAULT_CONFIG.answerScale));
+      cfg.specialImpactQuestion = Engine.DEFAULT_CONFIG.specialImpactQuestion;
+      cfg.specialImpactMinScore = Engine.DEFAULT_CONFIG.specialImpactMinScore;
+      cfg.specialImpactAmount = Engine.DEFAULT_CONFIG.specialImpactAmount;
+      cfg.questionCount = Engine.DEFAULT_CONFIG.questionCount;
+      auditConfig('questionnaire', 'custom', 'reset to Merit reference');
+      save().then(function () { recalc(); U.toast('طراحی بازنشانی شد.', 'ok'); });
+    });
+  }
+
+  /* ======================================================================
    * VIEW — Dashboard
    * ====================================================================*/
   VIEWS.dashboard = function (main) {
     var t = App.result.totals;
-    var withQ = App.state.questionnaires.filter(function (q) { return !q.excluded; }).length;
-    var missing = App.state.employees.filter(function (e) {
-      return isPayrollEligible(e) && !App.state.questionnaires.some(function (q) {
-        return q.employeeId === e.employeeId && !q.excluded;
-      });
-    }).length;
+    var scoped = dashboardRows();
 
     main.appendChild(head(
       'داشبورد — ' + App.state.period,
-      'وضعیت لحظه‌ای فرآیند کارانه. تمام اعداد با هر تغییر بلافاصله بازمحاسبه می‌شوند.',
+      isAdmin()
+        ? 'دید یک‌نگاهی از کل فرآیند. نمودارها، جدول یکپارچه و فیلترها همگی به یک مجموعه داده متصل‌اند.'
+        : 'دید واحدهای تحت مسئولیت شما.',
       [
-        btn('ورود پرسشنامه', function () { go('import'); }, 'primary'),
-        btn('خروجی Excel', function () { exportWorkbook(); })
+        btn('📊 خروجی کارانه (قالب حقوق و دستمزد)', function () { exportPayrollFile(); }, 'primary'),
+        btn('👔 خروجی به تفکیک مدیر', function () { exportByManager(); }),
+        btn('گزارش کامل', function () { go('reports'); }, 'ghost')
       ]));
+
+    if (!isAdmin() && roleScope()) {
+      main.appendChild(U.alert('info', 'دامنهٔ دسترسی شما',
+        'واحدهای ' + roleScope().join('، ') + ' — ' + scoped.length + ' نفر.'));
+    }
 
     if (t.budgetStatus !== 'BALANCED') {
       main.appendChild(U.alert('err', 'بودجه در وضعیت نامعتبر است',
         t.budgetOverrun
           ? 'مجموع کارانه نهایی از بودجه تعیین‌شده بیشتر است. تا رفع این مورد، نهایی‌سازی ممکن نیست.'
-          : t.negativePayoutCount + ' نفر با اعمال تغییرات معاون بخش دریافتی منفی پیدا کرده‌اند. تا رفع این مورد، نهایی‌سازی ممکن نیست.',
+          : t.negativePayoutCount + ' نفر با اعمال تغییرات معاون بخش دریافتی منفی پیدا کرده‌اند.',
         btn('بررسی', function () { go('validation'); }, 'sm')));
     }
-    if (issueCount('err')) {
-      main.appendChild(U.alert('warn', issueCount('err') + ' خطای باز در مرکز اعتبارسنجی',
-        'این موارد باید پیش از نهایی‌سازی برطرف شوند.',
-        btn('مشاهده', function () { go('validation'); }, 'sm')));
+    if (!phase1Ready()) {
+      main.appendChild(U.alert('warn', 'مرحلهٔ ۱ هنوز کامل نشده است',
+        phase1Blockers().length + ' مورد باید پیش از اتکا به این اعداد برطرف شود.',
+        btn('مرکز اعتبارسنجی', function () { go('validation'); }, 'sm')));
     }
 
+    /* ---- headline figures ----
+       Every tile describes the same population the charts and table below
+       describe. For a division head that is their own units, not the whole
+       organisation — otherwise the numbers would not add up to what they see. */
+    var scopeOf = function (e) {
+      if (isAdmin()) return true;
+      var sc = roleScope();
+      return !sc || sc.indexOf(e.division) !== -1;
+    };
+    var staff = App.state.employees.filter(scopeOf);
+    var withQ = 0, missing = 0;
+    staff.forEach(function (e) {
+      var has = App.state.questionnaires.some(function (q) {
+        return q.employeeId === e.employeeId && !q.excluded;
+      });
+      if (has) withQ++;
+      else if (isPayrollEligible(e)) missing++;
+    });
+    if (!App.state.employees.length) {
+      withQ = App.state.questionnaires.filter(function (q) { return !q.excluded; }).length;
+    }
+
+    var paid = 0, eligible = 0, ineligible = 0, overridden = 0, exceptions = 0;
+    scoped.forEach(function (r) {
+      paid += r.finalKaraneh;
+      if (r.eligible) eligible++; else ineligible++;
+      if (r.isOverridden) overridden++;
+      if (r.negative || !r.hasQuestionnaire || r.gradeScore === null) exceptions++;
+    });
+
     var grid = el('div', { class: 'kpi-grid' });
-    grid.appendChild(U.kpi('کل پرسنل', U.int(App.state.employees.length), { kind: 'brand' }));
-    grid.appendChild(U.kpi('واجد شرایط', U.int(t.eligibleCount),
-      { kind: 'ok', sub: 'امتیاز بالاتر از حد نصاب' }));
+    grid.appendChild(U.kpi(isAdmin() ? 'کل پرسنل' : 'پرسنل واحدهای شما',
+      U.int(staff.length || scoped.length), { kind: 'brand' }));
     grid.appendChild(U.kpi('دارای پرسشنامه', U.int(withQ), { kind: 'info' }));
     grid.appendChild(U.kpi('فاقد پرسشنامه', U.int(missing),
       { kind: missing ? 'warn' : '', sub: 'از میان پرسنل فعال' }));
-    grid.appendChild(U.kpi('زیر حد نصاب', U.int(t.ineligibleCount),
-      { kind: t.ineligibleCount ? 'warn' : '', sub: 'کارانه صفر' }));
-    grid.appendChild(U.kpi('تغییرات معاون بخش', U.int(t.overriddenCount), { kind: 'info' }));
-    grid.appendChild(U.kpi('موارد استثنا', U.int(issueCount('err')),
-      { kind: issueCount('err') ? 'err' : 'ok' }));
-    grid.appendChild(U.kpi('کارانه نهایی', U.moneyShort(t.sumFinalKaraneh),
-      { kind: 'brand', sub: 'ریال' }));
+    grid.appendChild(U.kpi('واجد شرایط', U.int(eligible),
+      { kind: 'ok', sub: 'امتیاز بالاتر از حد نصاب' }));
+    grid.appendChild(U.kpi('زیر حد نصاب', U.int(ineligible), { kind: ineligible ? 'warn' : '' }));
+    grid.appendChild(U.kpi('تغییرات معاون بخش', U.int(overridden), { kind: 'info' }));
+    grid.appendChild(U.kpi('موارد استثنا', U.int(isAdmin() ? issueCount('err') : exceptions),
+      { kind: (isAdmin() ? issueCount('err') : exceptions) ? 'err' : 'ok' }));
+    grid.appendChild(U.kpi(isAdmin() ? 'کارانه نهایی' : 'کارانه واحدهای شما',
+      U.moneyShort(paid), { kind: 'brand', sub: 'ریال' }));
     main.appendChild(grid);
 
-    var used = t.budget ? Math.min(1, t.allocatedBudget / t.budget) : 0;
-    var over = t.budget && t.allocatedBudget > t.budget
-      ? Math.min(1, (t.allocatedBudget - t.budget) / t.budget) : 0;
-    var bar = el('div', {}, [
-      el('div', { class: 'budget-bar' }, [
-        el('i', { class: 'used', style: 'width:' + (used * 100).toFixed(3) + '%' }),
-        over ? el('i', { class: 'over', style: 'width:' + (over * 100).toFixed(3) + '%' }) : null
-      ]),
+    /* ---- budget meter ---- */
+    var meterHost = el('div', {});
+    var budgetBody = el('div', {}, [
+      meterHost,
       el('div', { class: 'budget-legend' }, [
         el('span', { html: 'بودجه: <b class="num">' + U.money(t.budget) + '</b> ریال' }),
         el('span', { html: 'تخصیص‌یافته: <b class="num">' + U.money(t.allocatedBudget) + '</b>' }),
         el('span', { html: 'باقیمانده: <b class="num">' + U.money(t.remainingBudget) + '</b>' }),
         el('span', {}, [
           document.createTextNode('وضعیت: '),
-          el('span', {
-            class: 'chip ' + (t.budgetStatus === 'BALANCED' ? 'ok' : 'err'),
-            text: t.budgetStatus === 'BALANCED' ? 'متوازن' : 'نامعتبر'
-          })
+          el('span', { class: 'chip ' + (t.budgetStatus === 'BALANCED' ? 'ok' : 'err'),
+            text: t.budgetStatus === 'BALANCED' ? 'متوازن' : 'نامعتبر' })
         ])
       ])
     ]);
-    main.appendChild(U.card('کنترل بودجه', bar, {
-      hint: 'مجموع تخصیص همواره دقیقاً برابر بودجه است؛ تغییرات معاون بخش بین سایر افراد سرشکن می‌شود.'
+    main.appendChild(U.card('کنترل بودجه', budgetBody, {
+      hint: isAdmin()
+        ? 'مجموع تخصیص همواره دقیقاً برابر بودجه است'
+        : 'بودجه در سطح کل سازمان — سهم واحدهای شما در کاشی بالا آمده است'
     }));
 
-    var byDiv = {};
-    App.result.rows.forEach(function (r) {
-      if (!r.inScope) return;
-      var d = r.division || '—';
-      var g = byDiv[d] || (byDiv[d] = { division: d, count: 0, eligible: 0, score: 0, amount: 0, overrides: 0 });
-      g.count++;
-      if (r.eligible) g.eligible++;
-      g.score += r.totalScore;
-      g.amount += r.finalKaraneh;
-      if (r.isOverridden) g.overrides++;
-    });
-    var divRows = Object.keys(byDiv).map(function (k) { return byDiv[k]; });
+    /* ---- charts ---- */
+    var divisionHost = el('div', {});
+    var statusHost = el('div', {});
+    var statusLegendHost = el('div', {});
+    var scoreHost = el('div', {});
+    var levelHost = el('div', {});
 
-    if (divRows.length) {
-      var dg = U.DataGrid({
-        title: 'خلاصه به تفکیک واحد سازمانی',
-        rows: divRows,
-        sortKey: 'amount', sortDir: 'desc',
-        searchFields: ['division'],
-        columns: [
-          { key: 'division', label: 'واحد سازمانی', alwaysVisible: true },
-          { key: 'count', label: 'تعداد', type: 'int' },
-          { key: 'eligible', label: 'واجد شرایط', type: 'int' },
-          { key: 'score', label: 'امتیاز کل', type: 'score', calculated: true },
-          { key: 'overrides', label: 'تغییر معاون', type: 'int' },
-          { key: 'amount', label: 'کارانه نهایی (ریال)', type: 'money', calculated: true },
-          { key: 'share', label: 'سهم از بودجه', type: 'percent', calculated: true,
-            value: function (r) { return t.budget ? r.amount / t.budget : 0; } }
-        ],
-        footer: function (rows) {
-          var s = { count: 0, eligible: 0, score: 0, amount: 0, overrides: 0 };
-          rows.forEach(function (r) {
-            s.count += r.count; s.eligible += r.eligible;
-            s.score += r.score; s.amount += r.amount; s.overrides += r.overrides;
-          });
-          return {
-            division: 'جمع', count: U.int(s.count), eligible: U.int(s.eligible),
-            score: U.score(s.score), overrides: U.int(s.overrides),
-            amount: U.money(s.amount), share: U.percent(t.budget ? s.amount / t.budget : 0)
-          };
-        }
-      });
-      main.appendChild(dg.node);
-    }
+    var charts = el('div', { class: 'chart-grid-2' }, [
+      U.card('کارانه به تفکیک واحد سازمانی', divisionHost,
+        { hint: 'مجموع پرداختی هر واحد (ریال)' }),
+      U.card('توزیع امتیاز عملکرد', scoreHost,
+        { hint: 'تعداد افراد در هر بازهٔ امتیاز' }),
+      U.card('ترکیب وضعیت پرسنل', el('div', {}, [statusHost, statusLegendHost]),
+        { hint: 'سهم هر وضعیت از جمعیت محاسبه' }),
+      U.card('میانگین کارانه به تفکیک سطح شغلی', levelHost,
+        { hint: 'میانگین دریافتی هر JL (ریال)' })
+    ]);
+    main.appendChild(charts);
 
+    /* ---- unified table with filters ---- */
+    var tableCard = el('div', {});
+    main.appendChild(tableCard);
     main.appendChild(U.card('مسیر فرآیند', workflowNode(), { hint: 'وضعیت هر مرحله' }));
+
+    /* Charts need real widths, so draw after the nodes are in the document. */
+    requestAnimationFrame(function () {
+      Chart.meter(meterHost, t.allocatedBudget, t.budget);
+      drawDashboardCharts(scoped, {
+        division: divisionHost, status: statusHost, statusLegend: statusLegendHost,
+        score: scoreHost, level: levelHost
+      });
+      App.grids.unified = unifiedGrid(scoped);
+      tableCard.appendChild(App.grids.unified.node);
+    });
   };
+
+  /** The population this dashboard is allowed to describe. */
+  function dashboardRows() {
+    return App.result.rows.filter(function (r) {
+      return r.inScope && inScopeForRole(r);
+    });
+  }
+
+  function drawDashboardCharts(rows, hosts) {
+    var cfg = App.state.config;
+
+    /* Magnitude by division — horizontal, because unit names are long. */
+    var byDiv = {};
+    rows.forEach(function (r) {
+      var d = r.division || 'بدون واحد';
+      var g = byDiv[d] || (byDiv[d] = { amount: 0, count: 0, eligible: 0 });
+      g.amount += r.finalKaraneh; g.count++;
+      if (r.eligible) g.eligible++;
+    });
+    var divRows = Object.keys(byDiv).map(function (d) {
+      return {
+        label: d, value: byDiv[d].amount,
+        detail: U.money(byDiv[d].amount) + ' ریال<br>' + byDiv[d].count + ' نفر · ' +
+                byDiv[d].eligible + ' واجد شرایط'
+      };
+    }).sort(function (a, b) { return b.value - a.value; }).slice(0, 12);
+    Chart.horizontalBar(hosts.division, divRows, { format: U.moneyShort });
+
+    /* Part-to-whole across workflow states. Segments are always labelled and
+       separated, so the reserved status hues never carry meaning alone. */
+    var seg = [
+      { label: 'محاسبه شد', color: Chart.STATUS.good, value: 0 },
+      { label: 'تغییر معاون بخش', color: Chart.STATUS.neutral, value: 0 },
+      { label: 'زیر حد نصاب', color: Chart.STATUS.warning, value: 0 },
+      { label: 'ناقص یا استثنا', color: Chart.STATUS.critical, value: 0 }
+    ];
+    rows.forEach(function (r) {
+      if (!r.hasQuestionnaire || r.gradeScore === null || r.negative) seg[3].value++;
+      else if (!r.eligible) seg[2].value++;
+      else if (r.isOverridden) seg[1].value++;
+      else seg[0].value++;
+    });
+    Chart.stackedBar(hosts.status, seg);
+    U.clear(hosts.statusLegend);
+    hosts.statusLegend.appendChild(Chart.legend(seg, rows.length));
+
+    /* Distribution of performance scores across half-point bins. */
+    var bins = [], binSize = 0.5, maxScore = 5;
+    for (var b = 1; b < maxScore + binSize; b += binSize) bins.push({ from: b, count: 0 });
+    rows.forEach(function (r) {
+      if (r.performanceScore === null) return;
+      var idx = Math.min(bins.length - 1, Math.max(0, Math.round((r.performanceScore - 1) / binSize)));
+      bins[idx].count++;
+    });
+    var threshold = Number(cfg.minPerformanceThreshold);
+    Chart.columns(hosts.score, bins.map(function (b) {
+      var below = b.from <= threshold;
+      return {
+        label: b.from.toFixed(1),
+        value: b.count,
+        color: below ? 'var(--status-warning)' : 'var(--chart-series)',
+        sub: below ? 'زیر نصاب' : '',
+        detail: b.count + ' نفر با امتیاز ' + b.from.toFixed(1) +
+                (below ? '<br>زیر حد نصاب — کارانه صفر' : '')
+      };
+    }), { height: 200 });
+
+    /* Average payout per job level — shows whether grade matters at all. */
+    var byLevel = {};
+    rows.forEach(function (r) {
+      var k = r.jobLevel || '—';
+      var g = byLevel[k] || (byLevel[k] = { sum: 0, n: 0 });
+      g.sum += r.finalKaraneh; g.n++;
+    });
+    var levelRows = Object.keys(byLevel).sort(function (a, b) {
+      return U.naturalCompare(a, b);
+    }).map(function (k) {
+      return {
+        label: k, value: byLevel[k].n ? byLevel[k].sum / byLevel[k].n : 0,
+        detail: byLevel[k].n + ' نفر<br>میانگین ' + U.money(byLevel[k].sum / byLevel[k].n) + ' ریال'
+      };
+    });
+    /* This series is rial, not a head count, so it carries its own formatter. */
+    Chart.columns(hosts.level, levelRows, { height: 190, maxBarWidth: 54, format: U.moneyShort });
+  }
+
+  /**
+   * The one table that answers "who gets what, and why" — every field a
+   * manager might filter, sort or export on, in one place. It doubles as the
+   * table view that makes the charts above readable without color.
+   */
+  function unifiedGrid(rows) {
+    return U.DataGrid({
+      title: 'جدول یکپارچه کارانه',
+      rows: rows,
+      sortKey: 'finalKaraneh', sortDir: 'desc',
+      searchFields: ['employeeId', 'fullName', 'division', 'positionTitle', 'directManager'],
+      facets: [
+        { key: 'division', label: 'همه واحدها' },
+        { key: 'jobLevel', label: 'همه سطوح شغلی' },
+        { key: 'status', label: 'همه وضعیت‌ها' },
+        { key: 'manager', label: 'همه مدیران', value: function (r) { return managerOf(r, 'directManager'); } },
+        { key: 'managerL1', label: 'همه مدیران سطح ۱', value: function (r) { return managerOf(r, 'managerLevel1'); } },
+        { key: 'special', label: 'اثرگذاری ویژه',
+          value: function (r) { return r.specialImpactValue > 0 ? 'دارد' : (r.specialImpactBlocked ? 'ثبت شده ولی زیر نصاب' : 'ندارد'); } }
+      ],
+      rowClass: function (r) {
+        if (r.negative) return 'row-err';
+        if (!r.eligible) return 'row-warn';
+        return '';
+      },
+      actions: [
+        { label: '⬇ خروجی همین نما', kind: 'sm', onClick: function () { exportCurrentView(); } }
+      ],
+      columns: [
+        { key: 'employeeId', label: 'شماره پرسنلی', alwaysVisible: true, width: '95px' },
+        { key: 'fullName', label: 'نام و نام خانوادگی', width: '155px' },
+        { key: 'division', label: 'واحد سازمانی' },
+        { key: 'positionTitle', label: 'عنوان شغلی', width: '160px', hidden: true },
+        { key: 'jobLevel', label: 'JL', width: '48px' },
+        { key: 'manager', label: 'مدیر مستقیم', width: '150px',
+          value: function (r) { return managerOf(r, 'directManager'); } },
+        { key: 'managerL1', label: 'مدیر سطح ۱', width: '150px', hidden: true,
+          value: function (r) { return managerOf(r, 'managerLevel1'); } },
+        { key: 'managerL2', label: 'مدیر سطح ۲', width: '150px', hidden: true,
+          value: function (r) { return managerOf(r, 'managerLevel2'); } },
+        { key: 'performanceScore', label: 'امتیاز عملکرد', type: 'score', calculated: true },
+        { key: 'performanceKaraneh', label: 'عدد کارانه', type: 'score', decimals: 2, calculated: true },
+        { key: 'specialImpactValue', label: 'اثرگذاری ویژه', type: 'score', decimals: 0, calculated: true,
+          render: function (r) {
+            if (r.specialImpactBlocked) {
+              return el('span', { class: 'chip warn', text: '۰ (زیر نصاب)' });
+            }
+            return document.createTextNode(r.specialImpactValue ? U.score(r.specialImpactValue, 0) : '—');
+          } },
+        { key: 'gradeScore', label: 'عدد گرید', type: 'score', decimals: 0, calculated: true, hidden: true },
+        { key: 'totalScore', label: 'امتیاز کل', type: 'score', decimals: 2, calculated: true },
+        { key: 'initialAllocation', label: 'دریافتی محاسباتی', type: 'money', calculated: true },
+        { key: 'hodAdjustment', label: 'تغییر معاون بخش', type: 'money' },
+        { key: 'finalKaraneh', label: 'کارانه نهایی (ریال)', type: 'money', calculated: true,
+          className: function (r) { return r.negative ? 'neg' : ''; } },
+        { key: 'status', label: 'وضعیت', render: function (r) { return statusChip(r); } },
+        { key: 'hodComment', label: 'توضیح معاون بخش', width: '180px', hidden: true }
+      ],
+      footer: function (visible) {
+        var alloc = 0, fin = 0, sc = 0;
+        visible.forEach(function (r) {
+          alloc += r.initialAllocation; fin += r.finalKaraneh; sc += r.totalScore;
+        });
+        return {
+          employeeId: 'جمع (' + visible.length + ')',
+          totalScore: U.score(sc, 2),
+          initialAllocation: U.money(alloc),
+          finalKaraneh: U.money(fin)
+        };
+      },
+      onRowClick: function (r) { showEmployeeDetail(r.employeeId); }
+    });
+  }
+
+  /** Manager names live on the master record, not the questionnaire. */
+  function managerOf(row, field) {
+    var m = employeeById(row.employeeId);
+    return (m && m[field]) || '';
+  }
 
   function workflowNode() {
     var t = App.result.totals;
@@ -550,10 +1274,16 @@
     main.appendChild(head('اطلاعات پرسنل',
       'شماره پرسنلی کلید یکتای سیستم است. رکورد تکراری بدون تأیید شما وارد نمی‌شود.',
       [
+        btn('📄 دانلود تمپلیت حقوق و دستمزد', function () { downloadEmployeeTemplate(); }),
         btn('ورود فایل پرسنل', function () { pickFiles('employee'); }, 'primary'),
         btn('خروجی', function () { exportSheet('employees'); }),
         App.state.employees.length ? btn('پاک کردن', function () { clearEmployees(); }, 'danger') : null
       ].filter(Boolean)));
+
+    main.appendChild(U.alert('info', 'تمپلیت هماهنگ با فایل تیم حقوق و دستمزد',
+      'ستون‌های تمپلیت دقیقاً همان ستون‌های فایل «کارانه بهار ۱۴۰۵-Q1» است ' +
+      '(Emp No، Emp Status، Job Level، Division Alias، Working Day\'s، Manager Level 1..3 و …)، ' +
+      'بنابراین خروجی تیم حقوق و دستمزد بدون تغییر قابل ورود است و خروجی نهایی نیز در همان قالب تولید می‌شود.'));
 
     if (!App.state.employees.length) {
       main.appendChild(dropzoneNode('employee',
@@ -629,8 +1359,30 @@
   VIEWS.import = function (main) {
     main.appendChild(head('ورود پرسشنامه‌های تیمی',
       'چند فایل را همزمان انتخاب کنید. سیستم شیت «پرسشنامه کارانه تیمی» را پیدا می‌کند، ' +
-      'ردیف عنوان را تشخیص می‌دهد، ستون‌ها را نگاشت می‌کند و همه را در یک مجموعه واحد ادغام می‌کند.',
+      'ردیف عنوان را تشخیص می‌دهد، ستون‌ها را نگاشت می‌کند، ساختار را با تمپلیت مقایسه می‌کند ' +
+      'و همه را در یک مجموعه واحد ادغام می‌کند.',
       [btn('انتخاب فایل‌ها', function () { pickFiles('questionnaire'); }, 'primary')]));
+
+    main.appendChild(U.card('۱. دانلود تمپلیت', el('div', {}, [
+      el('p', { class: 'small muted', style: 'margin-top:0',
+        text: 'تمپلیت بر اساس طراحی فعلی پرسشنامه ساخته می‌شود: هر سؤال یک ستون، ' +
+              'گزینه‌های پاسخ به‌صورت فهرست کشویی، و فهرست پرسنل از پیش پر شده. ' +
+              'فایل امضای طراحی را در خود دارد تا هنگام بازگشت، هر ناسازگاری تشخیص داده شود.' }),
+      el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, [
+        btn('👥 تمپلیت با فهرست پرسنل', function () { downloadQuestionnaireTemplate({ prefill: true }); }, 'primary'),
+        btn('🏢 به تفکیک واحد سازمانی', function () { downloadQuestionnaireTemplatePerDivision(); }),
+        btn('📄 تمپلیت خالی', function () { downloadQuestionnaireTemplate({ prefill: false }); }),
+        btn('🧩 تغییر طراحی پرسشنامه', function () { go('designer'); }, 'ghost')
+      ]),
+      el('div', { class: 'small muted', style: 'margin-top:9px' }, [
+        document.createTextNode('امضای طراحی فعلی: '),
+        el('span', { class: 'mono', text: Tpl.signature(App.state.config) })
+      ])
+    ]), { hint: 'مطابق طراحی فعلی پرسشنامه' }));
+
+    main.appendChild(el('h2', {
+      style: 'font-size:14px;margin:18px 0 9px;font-weight:700'
+    }, [document.createTextNode('۲. ورود فایل‌های تکمیل‌شده')]));
 
     main.appendChild(dropzoneNode('questionnaire',
       'فایل‌های پرسشنامه را اینجا رها کنید',
@@ -751,9 +1503,30 @@
     files.forEach(function (f) {
       chain = chain.then(function () {
         return readFile(f).then(function (buf) {
-          parsed.push(Import.parseWorkbook(buf, {
+          var res = Import.parseWorkbook(buf, {
             fileName: f.name, kind: kind, mappings: App.state.columnMappings
-          }));
+          });
+          /* A questionnaire must match the design it was cut from. A signed
+             file is checked against the stored signature; an unsigned one
+             falls back to checking that every scored question has a column. */
+          if (kind === 'questionnaire') {
+            res.template = Tpl.verifyAgainstTemplate(res.workbook, App.state.config, XLSX);
+            if (res.template.level === 'unsigned') {
+              var col = Tpl.verifyColumns(res.mapping, App.state.config);
+              if (!col.ok) {
+                res.template = { ok: false, level: 'mismatch', problems: col.problems, meta: null };
+              }
+            }
+            if (!res.template.ok) {
+              errors.push({
+                file: f.name,
+                message: 'ساختار فایل با تمپلیت فعلی هماهنگ نیست.',
+                detail: res.template.problems
+              });
+              return;
+            }
+          }
+          parsed.push(res);
         }).catch(function (e) {
           errors.push({ file: f.name, message: e.message || String(e) });
         });
@@ -765,10 +1538,11 @@
       if (!parsed.length) {
         U.modal({
           title: 'هیچ فایلی خوانده نشد', size: 'narrow',
-          content: el('div', {}, errors.map(function (e) {
-            return U.alert('err', e.file, U.esc(e.message));
-          })),
-          buttons: [{ label: 'بستن', kind: 'primary' }]
+          content: el('div', {}, [templateErrorList(errors),
+            el('div', { style: 'margin-top:12px' }, [
+              btn('دانلود تمپلیت صحیح', function () { downloadQuestionnaireTemplate(); }, 'primary')
+            ])]),
+          buttons: [{ label: 'بستن' }]
         });
         return;
       }
@@ -782,7 +1556,17 @@
    * -------------------------------------------------------------------*/
   function showImportPreview(parsed, errors, kind) {
     var body = el('div', {});
-    errors.forEach(function (e) { body.appendChild(U.alert('err', e.file, U.esc(e.message))); });
+    if (errors.length) body.appendChild(templateErrorList(errors));
+    parsed.forEach(function (p) {
+      if (p.template && p.template.level === 'drift') {
+        body.appendChild(U.alert('warn', p.fileName + ' — تمپلیت قدیمی است',
+          U.esc(p.template.problems.join(' ')) ));
+      } else if (p.template && p.template.level === 'unsigned') {
+        body.appendChild(U.alert('info', p.fileName + ' — بدون امضای تمپلیت',
+          'این فایل از تمپلیت این سامانه تولید نشده است. ستون‌ها بررسی شدند و ' +
+          'تمام سؤالات محاسباتی پیدا شد، اما توصیه می‌شود از تمپلیت رسمی استفاده شود.'));
+      }
+    });
 
     var totalRecords = 0;
     parsed.forEach(function (p) { totalRecords += p.records.length; });
@@ -901,6 +1685,23 @@
       title: 'پیش‌نمایش ورود اطلاعات — ' + parsed.length + ' فایل',
       size: 'wide', content: body, buttons: buttons
     });
+  }
+
+  /** Render import failures with the specific mismatch under each file. */
+  function templateErrorList(errors) {
+    var wrap = el('div', {});
+    errors.forEach(function (e) {
+      var detail = el('div', {});
+      detail.appendChild(el('div', { text: e.message }));
+      (e.detail || []).forEach(function (line) {
+        detail.appendChild(el('div', {
+          class: 'small mono',
+          style: 'margin-top:5px;white-space:pre-wrap;direction:rtl'
+        }, [document.createTextNode(line)]));
+      });
+      wrap.appendChild(U.alert('err', e.file, detail));
+    });
+    return wrap;
   }
 
   function colLetter(i) {
@@ -1090,31 +1891,39 @@
    * ====================================================================*/
   VIEWS.questionnaires = function (main) {
     main.appendChild(head('مدیریت پرسشنامه کارانه تیمی',
-      'پاسخ‌ها قابل ویرایش‌اند و امتیازها بلافاصله بازمحاسبه می‌شوند. ' +
-      'خانه‌های زردرنگ ورودی کاربر و خانه‌های خاکستری محاسباتی هستند.',
+      'پاسخ‌ها را می‌توان مستقیماً در همین جدول ثبت کرد یا از فایل تکمیل‌شده وارد کرد — ' +
+      'هر دو مسیر به یک مجموعهٔ واحد می‌رسند. خانه‌های زردرنگ ورودی کاربر و خانه‌های خاکستری محاسباتی هستند.',
       [
-        btn('ورود فایل جدید', function () { go('import'); }, 'primary'),
+        btn('＋ افزودن فرد', function () { addManualRecord(); }, 'primary'),
+        btn('📥 ورود از فایل', function () { go('import'); }),
+        btn('📄 دانلود تمپلیت', function () { downloadQuestionnaireTemplate(); }),
         btn('خروجی', function () { exportSheet('questionnaire'); })
       ]));
 
     if (!App.state.questionnaires.length) {
       main.appendChild(el('div', { class: 'empty' }, [
         el('div', { class: 'big', text: '📝' }),
-        el('div', { text: 'هنوز پرسشنامه‌ای وارد نشده است.' }),
-        el('div', { style: 'margin-top:11px' }, [btn('ورود پرسشنامه', function () { go('import'); }, 'primary')])
+        el('div', { text: 'هنوز پرسشنامه‌ای ثبت نشده است. دو راه دارید:' }),
+        el('div', { style: 'margin-top:13px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap' }, [
+          btn('ثبت سیستمی — افزودن فرد', function () { addManualRecord(); }, 'primary'),
+          btn('ورود از فایل تکمیل‌شده', function () { go('import'); })
+        ])
       ]));
       return;
     }
 
+    var cfg = App.state.config;
     main.appendChild(el('div', { class: 'legend mb' }, [
       el('span', { html: '<i class="edit"></i> ورودی کاربر' }),
       el('span', { html: '<i class="calc"></i> محاسباتی (غیرقابل ویرایش)' }),
-      el('span', { class: 'muted', text: 'حداکثر امتیاز ' + App.state.config.maxPerformanceScore +
-        ' • تعداد سؤالات محاسباتی ' + App.state.config.questionCount +
-        ' • حد نصاب ' + App.state.config.minPerformanceThreshold })
+      el('span', { class: 'muted', text: 'حداکثر امتیاز ' + cfg.maxPerformanceScore +
+        ' • ' + Engine.scoredQuestions(cfg).length + ' سؤال محاسباتی' +
+        ' • حد نصاب ' + cfg.minPerformanceThreshold +
+        ' • اثرگذاری ویژه از امتیاز ' + cfg.specialImpactMinScore + ' به بالا' }),
+      el('span', {}, [btn('طراحی پرسشنامه', function () { go('designer'); }, 'sm ghost')])
     ]));
 
-    var answerOptions = Object.keys(App.state.config.answerScale);
+    var answerOptions = Object.keys(cfg.answerScale);
 
     function answerCell(qKey) {
       return function (r) {
@@ -1161,17 +1970,32 @@
         { key: 'fullName', label: 'نام و نام خانوادگی', width: '150px', group: 'شناسایی' },
         { key: 'division', label: 'واحد سازمانی', group: 'شناسایی' },
         { key: 'positionTitle', label: 'عنوان شغلی', width: '150px', group: 'شناسایی', hidden: true },
-        { key: 'jobLevel', label: 'JL', width: '48px', group: 'شناسایی' },
-        { key: 'q1', label: 'Q1', group: 'پاسخ سؤالات', editable: true, width: '108px', render: answerCell('q1') },
-        { key: 'q2', label: 'Q2', group: 'پاسخ سؤالات', editable: true, width: '108px', render: answerCell('q2') },
-        { key: 'q3', label: 'Q3', group: 'پاسخ سؤالات', editable: true, width: '108px', render: answerCell('q3') },
-        { key: 'q4', label: 'Q4', group: 'پاسخ سؤالات', editable: true, width: '108px', render: answerCell('q4') },
-        { key: 'q5', label: 'Q5 (اطلاعاتی)', group: 'پاسخ سؤالات', editable: true, width: '108px',
-          title: 'در محاسبه امتیاز عملکرد وارد نمی‌شود — مطابق فایل مرجع.',
-          render: answerCell('q5') },
+        { key: 'jobLevel', label: 'JL', width: '48px', group: 'شناسایی' }
+      ].concat(cfg.questions.map(function (q, i) {
+        return {
+          key: q.id,
+          label: q.id.toUpperCase() + (q.scored === false ? ' (اطلاعاتی)' : ''),
+          group: 'پاسخ سؤالات', editable: true, width: '112px',
+          title: q.text + (q.scored === false
+            ? '\n\nدر محاسبهٔ امتیاز عملکرد وارد نمی‌شود.'
+            : '\n\nوزن: ' + (q.weight === undefined ? 1 : q.weight)),
+          render: answerCell(q.id)
+        };
+      })).concat([
         { key: 'specialProject', label: 'اثرگذاری ویژه', group: 'اثرگذاری ویژه', editable: true,
+          title: cfg.specialImpactQuestion + '\n\nتنها از امتیاز کارانه ' +
+                 cfg.specialImpactMinScore + ' به بالا قابل پاسخ است.',
           render: function (r) {
             var q = questionnaireByKey(r._input._key);
+            /* The gate is enforced here as well as in the engine, so the
+               control is simply unavailable rather than silently ignored. */
+            if (!r.specialImpactUnlocked) {
+              return el('span', {
+                class: 'locked-note',
+                title: 'امتیاز کارانه ' + U.score(r.performanceKaraneh, 2) +
+                       ' کمتر از حد نصاب ' + cfg.specialImpactMinScore + ' است.'
+              }, [document.createTextNode('🔒 زیر ' + cfg.specialImpactMinScore)]);
+            }
             var cb = el('input', { type: 'checkbox' });
             cb.checked = !!r.specialProject;
             cb.addEventListener('change', function () {
@@ -1183,10 +2007,13 @@
           group: 'اثرگذاری ویژه', editable: true,
           render: function (r) {
             var q = questionnaireByKey(r._input._key);
+            if (!r.specialImpactUnlocked) {
+              return el('span', { class: 'muted', text: r.specialProject ? '۰ (اعمال نشد)' : '—' });
+            }
             var inp = el('input', { type: 'number', class: 'cell', step: '1',
               /* The default only applies once the flag is set; showing it on a
                  disabled cell would read as a live value. */
-              placeholder: r.specialProject ? String(App.state.config.specialImpactAmount) : '—' });
+              placeholder: r.specialProject ? String(cfg.specialImpactAmount) : '—' });
             inp.value = q && q.specialImpactAmount ? q.specialImpactAmount : '';
             inp.disabled = !r.specialProject;
             inp.addEventListener('change', function () {
@@ -1211,7 +2038,7 @@
           return el('button', { class: 'btn sm', text: 'جزئیات',
             onclick: function () { showEmployeeDetail(r.employeeId); } });
         } }
-      ],
+      ]),
       footer: function (visible) {
         var raw = 0, fin = 0, n = 0;
         visible.forEach(function (r) {
@@ -1242,6 +2069,82 @@
 
   function statusLabel(status) {
     return (STATUS_LABELS[status] || ['', status])[1];
+  }
+
+  /**
+   * Add a person to the questionnaire set by hand. This is the systemic
+   * answering path: the same record shape the importer produces, so both
+   * routes converge on one dataset.
+   */
+  function addManualRecord() {
+    var idInput = el('input', { type: 'text', class: 'editable', style: 'width:100%',
+      placeholder: 'مثلاً 1024 یا BEKI001' });
+    var preview = el('div', { class: 'small muted', style: 'margin-top:6px' });
+
+    idInput.addEventListener('input', function () {
+      var id = idInput.value.trim();
+      U.clear(preview);
+      if (!id) return;
+      var existing = App.state.questionnaires.filter(function (q) {
+        return q.employeeId === id && !q.excluded;
+      })[0];
+      if (existing) {
+        preview.appendChild(el('span', { class: 'chip err',
+          text: 'برای این شماره پرسنلی از قبل پرسشنامه ثبت شده است.' }));
+        return;
+      }
+      var master = employeeById(id);
+      preview.appendChild(master
+        ? el('span', { class: 'chip ok', text: master.fullName + ' — ' + (master.division || 'بدون واحد') })
+        : el('span', { class: 'chip warn', text: 'در اطلاعات پرسنل یافت نشد — رکورد بدون تطبیق ثبت می‌شود.' }));
+    });
+
+    U.modal({
+      title: 'افزودن فرد به پرسشنامه', size: 'narrow',
+      content: el('div', {}, [
+        el('label', { class: 'field' }, [
+          el('span', { html: 'شماره پرسنلی <b>*</b>' }), idInput
+        ]),
+        preview,
+        el('p', { class: 'small muted', style: 'margin-bottom:0' },
+          [document.createTextNode('نام و واحد سازمانی از اطلاعات پرسنل خوانده می‌شود. ' +
+            'پاسخ سؤالات را پس از افزودن، مستقیماً در جدول ثبت کنید.')])
+      ]),
+      buttons: [
+        { label: 'افزودن', kind: 'primary', keepOpen: true, onClick: function (close) {
+          var id = idInput.value.trim();
+          if (!id) { U.toast('شماره پرسنلی را وارد کنید.', 'err'); return false; }
+          if (App.state.questionnaires.some(function (q) {
+            return q.employeeId === id && !q.excluded;
+          })) { U.toast('برای این شماره پرسنلی از قبل پرسشنامه ثبت شده است.', 'err'); return false; }
+
+          var master = employeeById(id);
+          var rec = {
+            employeeId: id,
+            fullName: (master && master.fullName) || '',
+            division: (master && master.division) || '',
+            positionTitle: (master && master.positionTitle) || '',
+            jobLevel: (master && master.jobLevel) || '',
+            sourceFile: 'ثبت سیستمی',
+            importedAt: new Date().toISOString(),
+            _key: 'q' + (App._keySeq = (App._keySeq || 0) + 1)
+          };
+          App.state.questionnaires.push(rec);
+          Store.audit(App.state, {
+            entity: 'questionnaire', employeeId: id, employeeName: rec.fullName,
+            field: 'record', oldValue: '', newValue: 'ثبت سیستمی',
+            reason: 'افزودن دستی فرد به مجموعه پرسشنامه'
+          });
+          save().then(function () {
+            recalc();
+            U.toast('فرد اضافه شد — اکنون پاسخ سؤالات را در جدول ثبت کنید.', 'ok', 5000);
+          });
+          close();
+          return false;
+        } },
+        { label: 'انصراف' }
+      ]
+    });
   }
 
   function statusChip(r) {
@@ -1305,7 +2208,7 @@
 
     var grid = U.DataGrid({
       title: 'جدول پرداخت کارانه',
-      rows: App.result.rows,
+      rows: App.result.rows.filter(inScopeForRole),
       sortKey: 'finalKaraneh', sortDir: 'desc',
       searchFields: ['employeeId', 'fullName', 'division', 'positionTitle'],
       facets: [
@@ -1380,6 +2283,14 @@
    * ====================================================================*/
   VIEWS.hod = function (main) {
     var t = App.result.totals;
+    if (!phase1Ready()) {
+      main.appendChild(head('تغییرات معاون بخش', ''));
+      main.appendChild(U.alert('err', 'این مرحله هنوز باز نشده است',
+        phase1Blockers().length + ' مورد در مرحلهٔ ۱ باز است. تعیین مبلغ روی داده‌های ناقص ' +
+        'می‌تواند سهم سایر افراد را جابه‌جا کند، بنابراین تا رفع آن‌ها این صفحه قفل است.',
+        btn('مشاهده موارد', function () { go('validation'); }, 'sm')));
+      return;
+    }
     main.appendChild(head('تغییرات معاون بخش',
       'معاون بخش می‌تواند مبلغ نهایی هر فرد را تعیین کند. ثبت توضیح اجباری است و ' +
       'اختلاف مبلغ بین سایر افراد سرشکن می‌شود تا مجموع پرداخت از بودجه عبور نکند.'));
@@ -1406,7 +2317,13 @@
         'مبالغ تعیین‌شده باید کاهش یابد یا بودجه افزایش پیدا کند. تا رفع این مورد نهایی‌سازی ممکن نیست.'));
     }
 
-    var eligible = App.result.rows.filter(function (r) { return r.inScope && r.eligible; });
+    var eligible = App.result.rows.filter(function (r) {
+      return r.inScope && r.eligible && inScopeForRole(r);
+    });
+    if (!isAdmin() && roleScope()) {
+      main.appendChild(U.alert('info', 'دامنهٔ دسترسی شما',
+        'واحدهای ' + roleScope().join('، ') + ' — ' + eligible.length + ' نفر قابل تعیین مبلغ.'));
+    }
     var grid = U.DataGrid({
       title: 'تعیین مبلغ توسط معاون بخش',
       rows: eligible,
@@ -1469,6 +2386,15 @@
   function openHodEditor(employeeId) {
     var r = resultRow(employeeId);
     if (!r || !r.eligible) { U.toast('برای این فرد امکان تعیین مبلغ وجود ندارد.', 'warn'); return; }
+    if (!phase1Ready()) {
+      U.toast('تا رفع خطاهای مرحلهٔ ۱، تعیین مبلغ ممکن نیست.', 'err', 5000);
+      go('validation');
+      return;
+    }
+    if (!inScopeForRole(r)) {
+      U.toast('این فرد خارج از واحدهای تحت مسئولیت شماست.', 'err', 5000);
+      return;
+    }
     var ceiling = Engine.maxAllowedAdjustment(App.result, employeeId);
 
     var amount = el('input', {
@@ -1784,9 +2710,18 @@
     var issues = App.validation || [];
     var byCode = {};
     issues.forEach(function (i) {
-      var g = byCode[i.code] || (byCode[i.code] = { code: i.code, title: i.title, severity: i.severity, items: [] });
+      var g = byCode[i.code] || (byCode[i.code] = {
+        code: i.code, title: i.title, severity: i.severity, stage: i.stage, items: []
+      });
       g.items.push(i);
     });
+
+    main.appendChild(phase1Ready()
+      ? U.alert('ok', 'مرحلهٔ ۱ کامل است',
+          'اطلاعات پایه و پاسخ‌ها آمادهٔ محاسبه‌اند. مرحلهٔ ۲ برای معاونان بخش باز است.')
+      : U.alert('err', phase1Blockers().length + ' مورد پیش از شروع فرآیند باید برطرف شود',
+          'تا زمانی که این موارد باز باشند، صفحهٔ «تغییرات معاون بخش» قفل می‌ماند تا ' +
+          'تصمیم‌گیری روی داده‌های ناقص انجام نشود.'));
 
     var strip = el('div', { class: 'kpi-grid' });
     strip.appendChild(U.kpi('خطا', U.int(issueCount('err')), { kind: issueCount('err') ? 'err' : 'ok' }));
@@ -1795,6 +2730,8 @@
     strip.appendChild(U.kpi('وضعیت بودجه',
       App.result.totals.budgetStatus === 'BALANCED' ? 'متوازن' : 'نامعتبر',
       { kind: App.result.totals.budgetStatus === 'BALANCED' ? 'ok' : 'err' }));
+    strip.appendChild(U.kpi('مرحلهٔ ۱', phase1Ready() ? 'کامل' : phase1Blockers().length + ' مورد باز',
+      { kind: phase1Ready() ? 'ok' : 'err', sub: 'کنترل ورود به مرحلهٔ ۲' }));
     main.appendChild(strip);
 
     if (!issues.length) {
@@ -1802,10 +2739,22 @@
     }
 
     var order = { err: 0, warn: 1, info: 2 };
+    var stageOrder = { data: 0, payment: 1 };
+    var lastStage = null;
     Object.keys(byCode)
-      .sort(function (a, b) { return order[byCode[a].severity] - order[byCode[b].severity]; })
+      .sort(function (a, b) {
+        var sa = stageOrder[byCode[a].stage] - stageOrder[byCode[b].stage];
+        return sa || (order[byCode[a].severity] - order[byCode[b].severity]);
+      })
       .forEach(function (code) {
         var g = byCode[code];
+        if (g.stage !== lastStage) {
+          lastStage = g.stage;
+          main.appendChild(el('h2', { style: 'font-size:14px;margin:18px 0 9px;font-weight:700' },
+            [document.createTextNode(g.stage === 'data'
+              ? 'مرحلهٔ ۱ — اطلاعات و پاسخ‌ها'
+              : 'مرحلهٔ ۲ — محاسبه و تغییرات معاون بخش')]));
+        }
         var tbl = el('table', { class: 'grid' });
         tbl.appendChild(el('thead', {}, [el('tr', {}, [
           el('th', { text: 'شماره پرسنلی' }), el('th', { text: 'نام' }),
@@ -1929,7 +2878,8 @@
     var params = el('div', { class: 'form-grid' }, [
       numberField('بودجه کل (ریال)', 'budget', '1000000', 'سلول C1 فایل مرجع'),
       numberField('حداکثر امتیاز کارانه', 'maxPerformanceScore', '1', 'مقدار مرجع: 120'),
-      numberField('تعداد سؤالات عملکردی', 'questionCount', '1', 'مقدار مرجع: 4'),
+      numberField('تعداد سؤالات عملکردی', 'questionCount', '1',
+        'مخرج تبدیل امتیاز به عدد کارانه — با افزودن یا حذف سؤال خودکار به‌روز می‌شود'),
       numberField('حداقل امتیاز جهت دریافت', 'minPerformanceThreshold', '0.25', 'سلول D4'),
       numberField('ضریب تأثیر گرید', 'gradeImpactFactor', '0.1', 'سلول D2 — مقدار مرجع: 0'),
       numberField('امتیاز اثرگذاری ویژه', 'specialImpactAmount', '10', 'مقدار مرجع: 300'),
@@ -2026,48 +2976,20 @@
     main.appendChild(U.card('جدول گرید (JL → عدد گرید)', gradeBody,
       { hint: 'جایگزین VLOOKUP جدول Data!C:D' }));
 
-    /* -- answer scale -------------------------------------------------- */
-    var scaleBody = el('div', {});
-    var st = el('table', { class: 'grid' });
-    st.appendChild(el('thead', {}, [el('tr', {}, [
-      el('th', { text: 'پاسخ' }), el('th', { text: 'امتیاز' }), el('th', { text: '' })
-    ])]));
-    var stb = el('tbody');
-    Object.keys(cfg.answerScale).forEach(function (k) {
-      var inp = el('input', { type: 'number', class: 'cell', step: '1' });
-      inp.value = cfg.answerScale[k];
-      inp.addEventListener('change', function () {
-        var old = cfg.answerScale[k];
-        cfg.answerScale[k] = Number(inp.value);
-        auditConfig('answerScale.' + k, old, cfg.answerScale[k]);
-        save(); recalc();
-      });
-      stb.appendChild(el('tr', {}, [
-        el('td', { text: k }), el('td', {}, [inp]),
-        el('td', {}, [el('button', { class: 'btn sm danger', text: 'حذف', onclick: function () {
-          var old = cfg.answerScale[k];
-          delete cfg.answerScale[k];
-          auditConfig('answerScale.' + k, old, '(حذف شد)');
-          save(); recalc();
-        } })])
-      ]));
-    });
-    st.appendChild(stb);
-    scaleBody.appendChild(st);
-    var newAns = el('input', { type: 'text', placeholder: 'متن پاسخ', style: 'width:150px' });
-    var newVal = el('input', { type: 'number', placeholder: 'امتیاز', style: 'width:90px' });
-    scaleBody.appendChild(el('div', { style: 'display:flex;gap:7px;margin-top:10px' }, [
-      newAns, newVal,
-      btn('افزودن', function () {
-        var k = newAns.value.trim(); var v = Number(newVal.value);
-        if (!k || !isFinite(v)) { U.toast('متن پاسخ و امتیاز را وارد کنید.', 'err'); return; }
-        cfg.answerScale[k] = v;
-        auditConfig('answerScale.' + k, '(جدید)', v);
-        newAns.value = ''; newVal.value = '';
-        save(); recalc();
-      }, 'primary')
-    ]));
-    main.appendChild(U.card('نگاشت پاسخ به امتیاز', scaleBody, { hint: 'جایگزین جدول Data!H:I' }));
+    /* The answer scale lives in the questionnaire designer, where it sits
+       beside the questions it scores. Duplicating the editor here would give
+       two places to change one thing. */
+    main.appendChild(U.card('نمودار ارزیابی و سؤالات', el('div', {}, [
+      el('p', { class: 'small muted', style: 'margin-top:0',
+        text: 'متن و وزن سؤالات، نگاشت پاسخ به امتیاز، و شرط سؤال اثرگذاری ویژه ' +
+              'در صفحهٔ «طراحی پرسشنامه» تنظیم می‌شوند.' }),
+      el('div', { class: 'scale-preview' }, Object.keys(cfg.answerScale).map(function (k) {
+        return el('span', { html: U.esc(k) + ' <b>' + cfg.answerScale[k] + '</b>' });
+      })),
+      el('div', { style: 'margin-top:12px' }, [
+        btn('رفتن به طراحی پرسشنامه', function () { go('designer'); }, 'primary')
+      ])
+    ]), { hint: Engine.scoredQuestions(cfg).length + ' سؤال محاسباتی' }));
 
     /* -- column synonyms ---------------------------------------------- */
     var mapBody = el('div', {});
@@ -2265,6 +3187,112 @@
         el('li', { text: 'خروجی Excel' })
       ])));
   };
+
+  /* ======================================================================
+   * Template downloads
+   * ====================================================================*/
+
+  /** Employees a questionnaire template should be pre-filled with. */
+  function templateRoster(filter) {
+    var rows = App.state.employees.filter(function (e) {
+      if (!isPayrollEligible(e)) return false;
+      return !filter || filter(e);
+    });
+    if (!rows.length && !App.state.employees.length) {
+      /* No master file yet — fall back to whoever is already in the system. */
+      rows = App.state.questionnaires.filter(function (q) { return !q.excluded; });
+    }
+    return rows.map(function (e) {
+      return {
+        employeeId: e.employeeId,
+        fullName: e.fullName || ((e.firstName || '') + ' ' + (e.lastName || '')).trim(),
+        division: e.division || '',
+        positionTitle: e.positionTitle || '',
+        jobLevel: e.jobLevel || ''
+      };
+    }).sort(function (a, b) { return U.naturalCompare(a.employeeId, b.employeeId); });
+  }
+
+  function downloadQuestionnaireTemplate(opts) {
+    opts = opts || {};
+    var roster = opts.prefill === false ? [] : templateRoster(opts.filter);
+    var wb = Tpl.buildQuestionnaireTemplate(App.state.config, roster, {
+      XLSX: XLSX, period: App.state.period, scopeLabel: opts.scopeLabel
+    });
+    var name = 'Template-Questionnaire' + (opts.suffix ? '-' + opts.suffix : '') +
+               '-' + stamp() + '.xlsx';
+    writeWorkbook(wb, name);
+    Store.audit(App.state, {
+      entity: 'template', field: 'questionnaire', oldValue: '',
+      newValue: name + ' (' + roster.length + ' نفر)',
+      reason: 'دانلود تمپلیت پرسشنامه — امضای ' + Tpl.signature(App.state.config)
+    });
+    save();
+    U.toast('تمپلیت با ' + roster.length + ' نفر تولید شد.', 'ok');
+  }
+
+  /** One template per division, so each team lead gets only their own people. */
+  function downloadQuestionnaireTemplatePerDivision() {
+    var divisions = {};
+    templateRoster().forEach(function (e) {
+      (divisions[e.division || 'بدون واحد'] || (divisions[e.division || 'بدون واحد'] = [])).push(e);
+    });
+    var names = Object.keys(divisions);
+    if (!names.length) { U.toast('فهرست پرسنلی برای تفکیک وجود ندارد.', 'warn'); return; }
+
+    var body = el('div', {});
+    body.appendChild(el('p', { class: 'small muted', style: 'margin-top:0',
+      text: 'برای هر واحد یک فایل جداگانه تولید می‌شود. واحدهای موردنظر را انتخاب کنید.' }));
+    var chosen = {};
+    names.sort(function (a, b) { return a.localeCompare(b, 'fa'); }).forEach(function (d) {
+      var cb = el('input', { type: 'checkbox' });
+      cb.checked = true; chosen[d] = true;
+      cb.addEventListener('change', function () { chosen[d] = cb.checked; });
+      body.appendChild(el('label', { class: 'checkline' }, [
+        cb, el('span', { text: d + ' — ' + divisions[d].length + ' نفر' })
+      ]));
+    });
+
+    U.modal({
+      title: 'تمپلیت به تفکیک واحد سازمانی', size: 'narrow', content: body,
+      buttons: [
+        { label: 'تولید فایل‌ها', kind: 'primary', onClick: function () {
+          var made = 0;
+          names.forEach(function (d, i) {
+            if (!chosen[d]) return;
+            /* Stagger the saves: browsers drop bursts of simultaneous downloads. */
+            setTimeout(function () {
+              downloadQuestionnaireTemplate({
+                filter: function (e) { return (e.division || 'بدون واحد') === d; },
+                scopeLabel: d, suffix: safeFileName(d)
+              });
+            }, made * 450);
+            made++;
+          });
+          if (!made) U.toast('هیچ واحدی انتخاب نشد.', 'warn');
+        } },
+        { label: 'انصراف' }
+      ]
+    });
+  }
+
+  function downloadEmployeeTemplate() {
+    var wb = Tpl.buildEmployeeTemplate(App.state.config, App.state.employees, {
+      XLSX: XLSX, period: App.state.period
+    });
+    var name = 'Template-Employee-Master-' + stamp() + '.xlsx';
+    writeWorkbook(wb, name);
+    Store.audit(App.state, {
+      entity: 'template', field: 'employee', oldValue: '', newValue: name,
+      reason: 'دانلود تمپلیت اطلاعات پرسنل (هماهنگ با فایل حقوق و دستمزد)'
+    });
+    save();
+    U.toast('تمپلیت اطلاعات پرسنل تولید شد.', 'ok');
+  }
+
+  function safeFileName(s) {
+    return String(s).replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, '-').slice(0, 40);
+  }
 
   /* ======================================================================
    * Excel export
@@ -2485,6 +3513,292 @@
       : new Uint8Array(raw);
     download(bytes, filename,
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  }
+
+  /* ------------------------------------------------------------------------
+   * Payroll-format export
+   * ----------------------------------------------------------------------
+   * The dashboard's headline output. Column for column the same file the
+   * payroll team sends in, with Final Karaneh filled — so it goes straight
+   * back to them with no reshaping, and can be handed to any management level
+   * scoped to just their own people.
+   * ---------------------------------------------------------------------- */
+
+  /**
+   * Whole-rial payouts that still add up to the budget.
+   *
+   * The engine works in floating point; a payroll file must be integers. Naive
+   * rounding leaves the file a few rial off the budget, which the payroll team
+   * would have to explain. Largest-remainder allocation hands those spare rial
+   * to the rows that were rounded down hardest, so every group sums exactly
+   * and the groups sum to the whole.
+   *
+   * Computed once over the entire population, so a per-manager split cannot
+   * drift against the total.
+   */
+  function roundedPayouts() {
+    var rows = App.result.rows.filter(function (r) { return r.inScope; });
+    var out = {}, floors = [], sumFloor = 0, exact = 0;
+
+    rows.forEach(function (r) {
+      var v = r.finalKaraneh || 0;
+      var f = Math.floor(v);
+      out[r.employeeId] = f;
+      sumFloor += f;
+      exact += v;
+      floors.push({ id: r.employeeId, frac: v - f });
+    });
+
+    var remainder = Math.round(exact) - sumFloor;
+    floors.sort(function (a, b) { return b.frac - a.frac; });
+    for (var i = 0; i < remainder && i < floors.length; i++) out[floors[i].id] += 1;
+    return out;
+  }
+
+  function payrollSheet(rows, payouts) {
+    var byId = {};
+    App.result.rows.forEach(function (r) { byId[r.employeeId] = r; });
+    payouts = payouts || roundedPayouts();
+
+    var cols = Tpl.PAYROLL_COLUMNS;
+    var aoa = [cols.map(function (c) { return c.label; })];
+    var sum = 0, finalCol = 0, daysCol = 0;
+    cols.forEach(function (c, i) {
+      if (c.key === 'finalKaraneh') finalCol = i;
+      if (c.key === 'workingDays') daysCol = i;
+    });
+
+    rows.forEach(function (e) {
+      var r = byId[e.employeeId];
+      var paid = r ? (payouts[e.employeeId] || 0) : null;
+      sum += paid || 0;
+      aoa.push(cols.map(function (c) {
+        if (c.key === 'finalKaraneh') return paid === null ? '' : paid;
+        if (c.key === 'comment') {
+          /* Keep the payroll team's own note, and add ours only when there is
+             something they need to know. */
+          var notes = [];
+          if (e.comment) notes.push(e.comment);
+          if (!r) notes.push('بدون پرسشنامه');
+          else if (r.isOverridden) notes.push('تغییر معاون بخش: ' + (r.hodComment || '—'));
+          else if (!r.eligible && r.hasQuestionnaire) notes.push('امتیاز زیر حد نصاب');
+          return notes.join(' | ');
+        }
+        var v = e[c.key];
+        return v === null || v === undefined ? '' : v;
+      }));
+    });
+
+    aoa.push([]);
+    var totalRow = cols.map(function () { return ''; });
+    totalRow[0] = 'جمع';
+    totalRow[finalCol] = sum;
+    aoa.push(totalRow);
+
+    var ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = cols.map(function (c) { return { wch: c.width }; });
+    var fmt = {};
+    fmt[colLetter(finalCol)] = '#,##0';
+    fmt[colLetter(daysCol)] = '#,##0';
+    ws['!postprocess'] = { xSplit: 1, ySplit: 1, headerRow: 1, numberFormats: fmt };
+    return { ws: ws, total: sum, count: rows.length };
+  }
+
+  /** Master rows for the people in scope, in employee-number order. */
+  function payrollRoster(filter) {
+    var byId = {};
+    App.state.employees.forEach(function (e) { byId[e.employeeId] = e; });
+    var seen = {}, out = [];
+
+    App.result.rows.forEach(function (r) {
+      if (!r.inScope || !inScopeForRole(r)) return;
+      if (filter && !filter(r, byId[r.employeeId])) return;
+      seen[r.employeeId] = 1;
+      out.push(byId[r.employeeId] || {
+        employeeId: r.employeeId, firstName: '', lastName: r.fullName,
+        division: r.division, positionTitle: r.positionTitle, jobLevel: r.jobLevel,
+        employeeStatus: 'Active'
+      });
+    });
+    /* People with no questionnaire still belong in the payroll file, with a
+       blank amount, so the payroll team sees the whole population. */
+    App.state.employees.forEach(function (e) {
+      if (seen[e.employeeId] || !isPayrollEligible(e)) return;
+      var sc = roleScope();
+      if (!isAdmin() && sc && sc.indexOf(e.division) === -1) return;
+      if (filter && !filter(null, e)) return;
+      out.push(e);
+    });
+    return out.sort(function (a, b) { return U.naturalCompare(a.employeeId, b.employeeId); });
+  }
+
+  function exportPayrollFile() {
+    var rows = payrollRoster();
+    if (!rows.length) { U.toast('رکوردی برای خروجی وجود ندارد.', 'warn'); return; }
+    var built = payrollSheet(rows);
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, built.ws, 'Karaneh');
+    wb.Workbook = { Views: [{ RTL: false }] };
+    var name = 'Karaneh-Payroll-' + safeFileName(App.state.period) + '-' + stamp() + '.xlsx';
+    writeWorkbook(wb, name);
+    Store.audit(App.state, {
+      entity: 'export', field: 'payroll', oldValue: '',
+      newValue: name + ' — ' + built.count + ' نفر، ' + U.money(built.total) + ' ریال',
+      reason: 'خروجی کارانه در قالب فایل حقوق و دستمزد'
+    });
+    save();
+    U.toast(built.count + ' رکورد در قالب فایل حقوق و دستمزد تولید شد.', 'ok', 5000);
+  }
+
+  /**
+   * One workbook, one sheet per manager at the chosen level, so each manager
+   * can be sent only their own people.
+   */
+  function exportByManager() {
+    var levels = [
+      { key: 'directManager', label: 'مدیر مستقیم' },
+      { key: 'managerLevel1', label: 'مدیر سطح ۱' },
+      { key: 'managerLevel2', label: 'مدیر سطح ۲' },
+      { key: 'managerLevel3', label: 'مدیر سطح ۳' }
+    ];
+    var chosen = 'directManager';
+    var mode = 'sheets';
+
+    var counts = el('div', { class: 'small muted', style: 'margin-top:8px' });
+    function renderCounts() {
+      var roster = payrollRoster();
+      var groups = {};
+      roster.forEach(function (e) {
+        var k = e[chosen] || '— بدون مدیر';
+        groups[k] = (groups[k] || 0) + 1;
+      });
+      var keys = Object.keys(groups);
+      U.clear(counts);
+      counts.appendChild(el('b', { text: keys.length + ' گروه' }));
+      counts.appendChild(document.createTextNode(' • ' + roster.length + ' نفر' +
+        (keys.length ? ' • بزرگ‌ترین گروه ' +
+          Math.max.apply(null, keys.map(function (k) { return groups[k]; })) + ' نفر' : '')));
+    }
+
+    var sel = el('select', { class: 'editable', style: 'width:100%' });
+    levels.forEach(function (l) { sel.appendChild(el('option', { value: l.key, text: l.label })); });
+    sel.addEventListener('change', function () { chosen = sel.value; renderCounts(); });
+
+    var modeSel = el('select', { class: 'editable', style: 'width:100%' }, [
+      el('option', { value: 'sheets', text: 'یک فایل با یک شیت برای هر مدیر' }),
+      el('option', { value: 'files', text: 'یک فایل جداگانه برای هر مدیر' })
+    ]);
+    modeSel.addEventListener('change', function () { mode = modeSel.value; });
+
+    var body = el('div', {}, [
+      el('label', { class: 'field' }, [el('span', { text: 'تفکیک بر اساس' }), sel]),
+      el('label', { class: 'field' }, [el('span', { text: 'نحوهٔ تولید' }), modeSel]),
+      counts,
+      el('p', { class: 'small muted' }, [document.createTextNode(
+        'قالب هر شیت دقیقاً همان فایل حقوق و دستمزد است، با ستون Final Karaneh تکمیل‌شده.')])
+    ]);
+    renderCounts();
+
+    U.modal({
+      title: 'خروجی به تفکیک سطوح مدیریتی', size: 'narrow', content: body,
+      buttons: [
+        { label: 'تولید خروجی', kind: 'primary', onClick: function () {
+          var label = levels.filter(function (l) { return l.key === chosen; })[0].label;
+          runManagerExport(chosen, label, mode);
+        } },
+        { label: 'انصراف' }
+      ]
+    });
+  }
+
+  function runManagerExport(field, label, mode) {
+    var roster = payrollRoster();
+    var groups = {};
+    roster.forEach(function (e) {
+      var k = e[field] || '— بدون مدیر';
+      (groups[k] || (groups[k] = [])).push(e);
+    });
+    var names = Object.keys(groups).sort(function (a, b) { return a.localeCompare(b, 'fa'); });
+    if (!names.length) { U.toast('گروهی برای تفکیک پیدا نشد.', 'warn'); return; }
+
+    var used = {};
+    if (mode === 'files') {
+      var filePayouts = roundedPayouts();
+      names.forEach(function (n, i) {
+        /* Stagger the saves: browsers drop bursts of simultaneous downloads. */
+        setTimeout(function () {
+          var wb = XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(wb, payrollSheet(groups[n], filePayouts).ws, 'Karaneh');
+          wb.Workbook = { Views: [{ RTL: false }] };
+          writeWorkbook(wb, 'Karaneh-' + safeFileName(n) + '-' + stamp() + '.xlsx');
+        }, i * 450);
+      });
+    } else {
+      var wb = XLSX.utils.book_new();
+      /* An index sheet first, so the recipient sees the whole picture. */
+      var idx = [[label, 'تعداد نفرات', 'مجموع کارانه (ریال)']];
+      var grand = 0, built = {};
+      var payouts = roundedPayouts();
+      names.forEach(function (n) {
+        built[n] = payrollSheet(groups[n], payouts);
+        grand += built[n].total;
+        idx.push([n, built[n].count, built[n].total]);
+      });
+      idx.push([]);
+      idx.push(['جمع کل', roster.length, grand]);
+      var iws = XLSX.utils.aoa_to_sheet(idx);
+      iws['!cols'] = [{ wch: 32 }, { wch: 14 }, { wch: 24 }];
+      iws['!postprocess'] = { ySplit: 1, headerRow: 1, numberFormats: { B: '#,##0', C: '#,##0' } };
+      XLSX.utils.book_append_sheet(wb, iws, 'فهرست');
+      names.forEach(function (n, i) {
+        XLSX.utils.book_append_sheet(wb, built[n].ws, safeSheetName(n, i, used));
+      });
+      wb.Workbook = { Views: [{ RTL: true }] };
+      writeWorkbook(wb, 'Karaneh-By-' + safeFileName(label) + '-' + stamp() + '.xlsx');
+    }
+
+    Store.audit(App.state, {
+      entity: 'export', field: 'byManager', oldValue: '',
+      newValue: names.length + ' گروه بر اساس ' + label,
+      reason: 'خروجی به تفکیک سطوح مدیریتی'
+    });
+    save();
+    U.toast('خروجی برای ' + names.length + ' گروه تولید شد.', 'ok', 5000);
+  }
+
+  /* Exposed so the end-to-end test can drive the export without going through
+     the modal, the same way `recalc` is exposed for the rest of the suite. */
+  window.__runManagerExport = function (field, label, mode) {
+    runManagerExport(field || 'directManager', label || 'مدیر مستقیم', mode || 'sheets');
+  };
+
+  /** Excel sheet names cap at 31 characters and reject several symbols. */
+  function safeSheetName(name, i, used) {
+    var base = String(name).replace(/[\\\/*?:\[\]]/g, '-').slice(0, 28) || ('گروه ' + (i + 1));
+    var candidate = base, n = 2;
+    while (used[candidate]) candidate = base.slice(0, 26) + '-' + (n++);
+    used[candidate] = 1;
+    return candidate;
+  }
+
+  /** Export exactly what the dashboard table is currently showing. */
+  function exportCurrentView() {
+    var grid = App.grids.unified;
+    var rows = grid ? grid.getVisibleRows() : dashboardRows();
+    if (!rows.length) { U.toast('ردیفی برای خروجی وجود ندارد.', 'warn'); return; }
+    var byId = {};
+    App.state.employees.forEach(function (e) { byId[e.employeeId] = e; });
+    var roster = rows.map(function (r) {
+      return byId[r.employeeId] || {
+        employeeId: r.employeeId, lastName: r.fullName, division: r.division,
+        positionTitle: r.positionTitle, jobLevel: r.jobLevel, employeeStatus: 'Active'
+      };
+    });
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, payrollSheet(roster).ws, 'Karaneh');
+    wb.Workbook = { Views: [{ RTL: false }] };
+    writeWorkbook(wb, 'Karaneh-Filtered-' + stamp() + '.xlsx');
+    U.toast(roster.length + ' ردیف مطابق فیلتر فعلی تولید شد.', 'ok');
   }
 
   function exportWorkbook() {

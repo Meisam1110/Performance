@@ -370,6 +370,7 @@
        lookup or a cover page. */
     var best = names[0], bestRows = -1;
     for (i = 0; i < names.length; i++) {
+      if (names[i] === '_Template') continue;   // signature sheet, never data
       var ws = workbook.Sheets[names[i]];
       if (!ws || !ws['!ref']) continue;
       var range = XLSXRef(ws['!ref']);
@@ -450,6 +451,7 @@
     if (skipped) warnings.push(skipped + ' ردیف به دلیل نداشتن شماره پرسنلی نادیده گرفته شد.');
 
     return {
+      workbook: wb,
       batchId: batchId,
       fileName: opts.fileName,
       sheetName: sheetName,

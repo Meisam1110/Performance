@@ -1,12 +1,14 @@
 /* ============================================================================
- * xlsx-postprocess.js — freeze panes and cell formatting for SheetJS output
+ * xlsx-postprocess.js — freeze panes, cell formatting and dropdowns
  * ----------------------------------------------------------------------------
  * The community build of SheetJS writes column widths, autofilters and RTL
- * sheet views, but neither frozen panes nor cell styles: there is no `!freeze`
- * handling anywhere in the bundle, and `cell.z` never reaches styles.xml.
- * Frozen headers and thousand-separated rial amounts both matter on a payment
- * sheet that runs to thousands of rows, so this module edits the generated
- * .xlsx directly.
+ * sheet views, but not frozen panes, cell styles or data validation: there is
+ * no `!freeze` handling anywhere in the bundle, `cell.z` never reaches
+ * styles.xml, and dropdowns are not emitted at all. Frozen headers and
+ * thousand-separated rial amounts matter on a payment sheet running to
+ * thousands of rows; dropdowns matter even more on a template a manager fills
+ * in by hand, because they stop invalid answers at the source. So this module
+ * edits the generated .xlsx directly.
  *
  * An .xlsx is a ZIP. When SheetJS is asked to write without compression every
  * entry is STORED, which means each file's bytes sit verbatim in the archive
@@ -312,6 +314,48 @@
   }
 
   /**
+   * Build the <dataValidations> block for a sheet.
+   *
+   * Inline list validation caps at 255 characters of formula, so a scale with
+   * unusually long wording is skipped rather than written truncated — a
+   * truncated list would silently reject valid answers.
+   */
+  function buildValidations(specs) {
+    var parts = [], count = 0;
+    specs.forEach(function (v) {
+      if (!v.options || !v.options.length) return;
+      var joined = v.options.join(',');
+      if (joined.indexOf('"') !== -1 || joined.length > 250) return;
+      var col = colLetter(v.col);
+      var sqref = col + v.firstRow + ':' + col + v.lastRow;
+      parts.push('<dataValidation type="list" allowBlank="1" showInputMessage="1"' +
+        ' showErrorMessage="1" errorStyle="stop"' +
+        ' error="' + escapeXmlAttr('پاسخ باید از فهرست انتخاب شود.') + '"' +
+        ' errorTitle="' + escapeXmlAttr('پاسخ نامعتبر') + '"' +
+        ' sqref="' + sqref + '"><formula1>&quot;' + escapeXmlAttr(joined) +
+        '&quot;</formula1></dataValidation>');
+      count++;
+    });
+    if (!count) return '';
+    return '<dataValidations count="' + count + '">' + parts.join('') + '</dataValidations>';
+  }
+
+  /**
+   * Insert a block into the worksheet at its schema-mandated position.
+   * dataValidations must follow sheetData/autoFilter and precede ignoredErrors;
+   * Excel rejects the file outright if the order is wrong.
+   */
+  function insertBeforeTail(xml, block) {
+    if (!block) return xml;
+    var anchors = ['<ignoredErrors', '<hyperlinks', '<printOptions', '<pageMargins', '</worksheet>'];
+    for (var i = 0; i < anchors.length; i++) {
+      var at = xml.indexOf(anchors[i]);
+      if (at !== -1) return xml.slice(0, at) + block + xml.slice(at);
+    }
+    return xml;
+  }
+
+  /**
    * Stamp style indices onto worksheet cells.
    *
    * @param xml          the worksheet part
@@ -342,7 +386,8 @@
    * @param {Object} specBySheet  sheet display name → {
    *          xSplit, ySplit,          frozen columns / rows
    *          headerRow,               1-based header row to embolden
-   *          numberFormats            { 'M': '#,##0', 'F': '0.00', ... }
+   *          numberFormats,           { 'M': '#,##0', 'F': '0.00', ... }
+   *          validations              [{ col, firstRow, lastRow, options }]
    *        }
    * @returns {Uint8Array} the patched workbook, or the input unchanged if the
    *          archive is not in the simple STORED form this module can rewrite.
@@ -393,6 +438,10 @@
         var xml = utf8Decode(e.data), before = xml;
 
         xml = addPane(xml, spec.xSplit || 0, spec.ySplit || 0);
+
+        if (spec.validations && spec.validations.length) {
+          xml = insertBeforeTail(xml, buildValidations(spec.validations));
+        }
 
         if (styles) {
           var columnStyle = {}, fmts = spec.numberFormats || {};
