@@ -38,8 +38,13 @@
       'خیلی زیاد': 5
     },
 
-    /* Data!C4:D9 — job level → grade score (the VLOOKUP target) */
-    gradeMap: { '0': 100, '1': 150, '2': 200, '3': 250, '3H': 300, '4': 350 },
+    /* Data!C4:D9 — job level → grade score (the VLOOKUP target).
+       The reference workbook defines 0,1,2,3,3H,4 on 50-point steps. `2H`
+       appears in the payroll file but not in that table, so its 225 is a
+       midpoint placeholder: it seats 2H between 2 and 3 without moving any
+       grade the workbook already fixed. Confirm the intended figure before
+       switching the grade impact factor on — see docs/05-ambiguities.md. */
+    gradeMap: { '0': 100, '1': 150, '2': 200, '2H': 225, '3': 250, '3H': 300, '4': 350 },
 
     /* «عدد کارانه» scaling: score × maxPerformanceScore / questionCount */
     maxPerformanceScore: 120,
@@ -68,7 +73,9 @@
     belowThresholdRule: 'zero',     // 'zero' | 'keep'
 
     /* روش پرداخت کارانه!D2 — grade influence. 0 in the reference workbook,
-       which is why job level currently has no effect on the payout. */
+       which is why job level currently has no effect on the payout. Raising it
+       moves money from lower job levels to higher ones; the settings screen
+       previews exactly how much before the change is committed. */
     gradeImpactFactor: 0,
 
     /* «کارانه اثرگذاری ویژه» — flat bonus coefficient for special impact. */

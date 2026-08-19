@@ -53,7 +53,14 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
     var s = window.SAMPLE_DATA, now = new Date().toISOString();
     var st = window.App.state;
     Object.keys(s.config).forEach(function (k) {
-      if (st.config[k] !== undefined) st.config[k] = s.config[k];
+      if (st.config[k] === undefined) return;
+      if (k === 'gradeMap') {
+        Object.keys(s.config.gradeMap).forEach(function (jl) {
+          st.config.gradeMap[jl] = s.config.gradeMap[jl];
+        });
+        return;
+      }
+      st.config[k] = s.config[k];
     });
     st.questionnaires = s.employees.map(function (e, i) {
       var c = JSON.parse(JSON.stringify(e));
@@ -314,11 +321,110 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   check('restoring the weight restores the score',
     Math.abs(weighted.restored - weighted.before) < 1e-9);
 
+  console.log('\n== GRADE TABLE AND IMPACT FACTOR ==');
+  await page.evaluate(function () { window.App.go('settings'); });
+  await page.waitForSelector('#main table.grid');
+  var gradeUi = await page.evaluate(function () {
+    var cfg = window.App.state.config;
+    /* the grade table is the first grid on the settings page */
+    var rows = Array.prototype.slice.call(
+      document.querySelectorAll('#gradeTable tbody tr'));
+    var levels = rows.map(function (tr) { return tr.children[0].textContent.trim(); });
+    return {
+      map: cfg.gradeMap,
+      levelsShown: levels,
+      factorControls: document.querySelectorAll('#main input[type="range"]').length,
+      has2H: levels.some(function (l) { return l.indexOf('2H') === 0; })
+    };
+  });
+  check('grade table lists 2H', gradeUi.has2H, gradeUi.levelsShown.join(' , '));
+  check('2H is configured at 225', gradeUi.map['2H'] === 225, String(gradeUi.map['2H']));
+  check('grade ladder is shown in rank order',
+    gradeUi.levelsShown.join(',') === '0,1,2,2H,3,3H,4', gradeUi.levelsShown.join(','));
+  check('the impact factor has a slider control', gradeUi.factorControls === 1,
+    gradeUi.factorControls + ' sliders');
+
+  /* Moving the slider must preview without committing. */
+  var previewOnly = await page.evaluate(function () {
+    var before = window.App.state.config.gradeImpactFactor;
+    var slider = document.querySelector('#main input[type="range"]');
+    slider.value = '0.5';
+    slider.dispatchEvent(new Event('input', { bubbles: true }));
+    return { before: before, after: window.App.state.config.gradeImpactFactor,
+             previewText: document.querySelector('#main .alert') ?
+               document.querySelector('#main .alert').textContent : '' };
+  });
+  check('moving the slider previews without committing',
+    previewOnly.before === 0 && previewOnly.after === 0, 'config still ' + previewOnly.after);
+  check('the preview states what the change would move',
+    /منتقل می‌شود/.test(previewOnly.previewText), previewOnly.previewText.slice(0, 70).trim());
+
+  /* Committing changes the distribution and still reconciles. */
+  var committed = await page.evaluate(function () {
+    var slider = document.querySelector('#main input[type="range"]');
+    slider.value = '0.5';
+    slider.dispatchEvent(new Event('input', { bubbles: true }));
+    var apply = Array.prototype.slice.call(document.querySelectorAll('#main button'))
+      .filter(function (b) { return b.textContent.trim() === 'اعمال'; })[0];
+    apply.click();
+    return {
+      factor: window.App.state.config.gradeImpactFactor,
+      sum: window.App.result.totals.sumFinalKaraneh,
+      gradeImpacted: window.App.result.rows.filter(function (r) {
+        return r.inScope && r.gradeImpact > 0;
+      }).length
+    };
+  });
+  check('applying the factor commits it', committed.factor === 0.5, String(committed.factor));
+  check('grade now contributes to the score', committed.gradeImpacted > 90,
+    committed.gradeImpacted + ' employees');
+  check('budget still reconciles with grade switched on',
+    Math.abs(committed.sum - 100000000000) < 1e-2, committed.sum.toFixed(2));
+
+  var restored = await page.evaluate(function () {
+    window.App.state.config.gradeImpactFactor = 0;
+    window.App.recalc();
+    return window.App.result.totals.sumFinalKaraneh;
+  });
+  check('restoring the factor to zero reconciles',
+    Math.abs(restored - 100000000000) < 1e-2, restored.toFixed(2));
+
+  /* An unmapped level must be offered a one-click fix. */
+  var unmapped = await page.evaluate(function () {
+    window.App.state.questionnaires[0].jobLevel = '5H';
+    window.App.state.employees[0].jobLevel = '5H';
+    window.App.recalc();
+    window.App.go('settings');
+    var errs = window.App.validation.filter(function (i) { return i.code === 'UNMAPPED_JL'; }).length;
+    var fixBtn = Array.prototype.slice.call(document.querySelectorAll('#main button'))
+      .filter(function (b) { return b.textContent.indexOf('افزودن 5H') !== -1; })[0];
+    var had = !!fixBtn;
+    if (fixBtn) fixBtn.click();
+    return { errs: errs, offered: had, added: window.App.state.config.gradeMap['5H'] };
+  });
+  check('an unmapped job level is reported', unmapped.errs > 0, unmapped.errs + ' issues');
+  check('the settings page offers a one-click fix', unmapped.offered);
+  check('the suggested score seats it above the top level',
+    unmapped.added === 400, String(unmapped.added));
+
+  await page.evaluate(function () {
+    delete window.App.state.config.gradeMap['5H'];
+    window.App.state.questionnaires[0].jobLevel = '3H';
+    window.App.state.employees[0].jobLevel = '3H';
+    window.App.recalc();
+  });
+
   console.log('\n== TEMPLATE DOWNLOAD AND RE-IMPORT ==');
-  var tplDownload = page.waitForEvent('download', { timeout: 20000 });
+  /* Navigate explicitly rather than relying on where the previous block left
+     the app — otherwise reordering blocks silently breaks this one. */
   await page.evaluate(function () {
     window.App.state.employees = window.App.state.employees.slice(0, 6);
     window.App.recalc();
+    window.App.go('designer');
+  });
+  await page.waitForSelector('.qrow');
+  var tplDownload = page.waitForEvent('download', { timeout: 20000 });
+  await page.evaluate(function () {
     document.querySelectorAll('#main button').forEach(function (b) {
       if (b.textContent.indexOf('تمپلیت با فهرست پرسنل') !== -1) b.click();
     });

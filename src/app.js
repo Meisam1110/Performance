@@ -2881,7 +2881,6 @@
       numberField('تعداد سؤالات عملکردی', 'questionCount', '1',
         'مخرج تبدیل امتیاز به عدد کارانه — با افزودن یا حذف سؤال خودکار به‌روز می‌شود'),
       numberField('حداقل امتیاز جهت دریافت', 'minPerformanceThreshold', '0.25', 'سلول D4'),
-      numberField('ضریب تأثیر گرید', 'gradeImpactFactor', '0.1', 'سلول D2 — مقدار مرجع: 0'),
       numberField('امتیاز اثرگذاری ویژه', 'specialImpactAmount', '10', 'مقدار مرجع: 300'),
       numberField('ضریب پایه هر نفر', 'baselineCoefficientPerPerson', '10', 'B5 ÷ A5 — مقدار مرجع: 100')
     ]);
@@ -2918,61 +2917,312 @@
     });
     main.appendChild(U.card('بودجه و پارامترها', params));
 
-    /* -- grade table --------------------------------------------------- */
-    var gradeBody = el('div', {});
-    var gt = el('table', { class: 'grid' });
-    gt.appendChild(el('thead', {}, [el('tr', {}, [
-      el('th', { text: 'JL' }), el('th', { text: 'عدد گرید' }), el('th', { text: '' })
-    ])]));
-    var gtb = el('tbody');
-    Object.keys(cfg.gradeMap).forEach(function (jl) {
-      var inp = el('input', { type: 'number', class: 'cell', step: '10' });
-      inp.value = cfg.gradeMap[jl];
-      inp.addEventListener('change', function () {
-        var old = cfg.gradeMap[jl];
-        cfg.gradeMap[jl] = Number(inp.value);
-        auditConfig('gradeMap.' + jl, old, cfg.gradeMap[jl]);
-        save(); recalc({ repaint: false }); renderTopStats();
-      });
-      gtb.appendChild(el('tr', {}, [
-        el('td', { class: 'mono', text: jl }),
-        el('td', {}, [inp]),
-        el('td', {}, [el('button', { class: 'btn sm danger', text: 'حذف', onclick: function () {
-          var old = cfg.gradeMap[jl];
-          delete cfg.gradeMap[jl];
-          auditConfig('gradeMap.' + jl, old, '(حذف شد)');
-          save(); recalc();
-        } })])
-      ]));
-    });
-    gt.appendChild(gtb);
-    gradeBody.appendChild(gt);
+    /* -- grade impact ---------------------------------------------------
+       Its own panel rather than one field among many: turning grade on moves
+       money between people, so the number needs its effect shown beside it
+       before it is committed. */
+    var gradeBox = el('div', {});
+    var previewBox = el('div', {});
 
-    var newJl = el('input', { type: 'text', placeholder: 'JL مثلاً 2H', style: 'width:110px' });
-    var newScore = el('input', { type: 'number', placeholder: 'عدد گرید', style: 'width:110px' });
-    gradeBody.appendChild(el('div', { style: 'display:flex;gap:7px;margin-top:10px;align-items:center' }, [
-      newJl, newScore,
-      btn('افزودن', function () {
-        var k = Engine.normalizeJobLevel(newJl.value);
-        var v = Number(newScore.value);
-        if (!k || !isFinite(v)) { U.toast('سطح شغلی و عدد گرید را وارد کنید.', 'err'); return; }
-        cfg.gradeMap[k] = v;
-        auditConfig('gradeMap.' + k, '(جدید)', v);
-        newJl.value = ''; newScore.value = '';
-        save(); recalc();
-      }, 'primary')
-    ]));
-
-    var unmappedJl = {};
-    App.result.rows.forEach(function (r) {
-      if (r.inScope && r.gradeScore === null && r.jobLevel) unmappedJl[r.jobLevel] = 1;
+    var factorInput = el('input', {
+      type: 'number', class: 'editable', step: '0.05', min: '0',
+      style: 'width:120px;font-size:15px;font-weight:700'
     });
-    var missingJl = Object.keys(unmappedJl);
-    if (missingJl.length) {
-      gradeBody.appendChild(U.alert('err', 'سطوح شغلی تعریف‌نشده',
-        'این سطوح در داده‌ها وجود دارند اما در جدول گرید نیستند: ' + missingJl.join('، ') +
-        ' — تا تعریف نشوند، امتیاز گرید این افراد محاسبه نمی‌شود.'));
+    factorInput.value = cfg.gradeImpactFactor;
+
+    var slider = el('input', {
+      type: 'range', min: '0', max: '2', step: '0.05', style: 'flex:1;min-width:180px'
+    });
+    slider.value = cfg.gradeImpactFactor;
+
+    /* Pending value: the preview follows the control live, but nothing is
+       written until the user commits. */
+    var pending = Number(cfg.gradeImpactFactor);
+
+    function setPending(v) {
+      pending = isFinite(v) && v >= 0 ? v : 0;
+      factorInput.value = pending;
+      slider.value = Math.min(2, pending);
+      renderGradePreview();
     }
+    factorInput.addEventListener('input', function () { setPending(Number(factorInput.value)); });
+    slider.addEventListener('input', function () { setPending(Number(slider.value)); });
+
+    function commitFactor() {
+      if (Number(cfg.gradeImpactFactor) === pending) {
+        U.toast('این مقدار هم‌اکنون اعمال شده است.', 'warn', 2500);
+        return;
+      }
+      setConfig('gradeImpactFactor', pending);
+      renderView();
+    }
+
+    /**
+     * Run the engine at the pending factor and diff it against the live one,
+     * so the panel can answer the only question that matters: who gains, who
+     * loses, and by how much.
+     */
+    function renderGradePreview() {
+      U.clear(previewBox);
+      var rows = App.result.rows.filter(function (r) { return r.inScope; });
+      if (!rows.length) {
+        previewBox.appendChild(el('div', { class: 'small muted',
+          text: 'برای پیش‌نمایش اثر، ابتدا پرسشنامه‌ها را وارد کنید.' }));
+        return;
+      }
+
+      var inputs = rows.map(function (r) { return r._input; });
+      var trial = Engine.calculate(inputs, mergeCfg(cfg, { gradeImpactFactor: pending }));
+      var current = Engine.calculate(inputs, mergeCfg(cfg, { gradeImpactFactor: cfg.gradeImpactFactor }));
+
+      var before = {}, after = {};
+      current.rows.forEach(function (r) { before[r.employeeId] = r.finalKaraneh; });
+      trial.rows.forEach(function (r) { after[r.employeeId] = r.finalKaraneh; });
+
+      /* Share of the score pool that grade would control. */
+      var gradeShare = trial.totals.sumTotalScore
+        ? trial.rows.reduce(function (a, r) { return a + r.gradeImpact; }, 0) / trial.totals.sumTotalScore
+        : 0;
+
+      var moved = 0, movers = [];
+      trial.rows.forEach(function (r) {
+        if (!r.inScope) return;
+        var d = (after[r.employeeId] || 0) - (before[r.employeeId] || 0);
+        if (Math.abs(d) > 0.5) moved += Math.abs(d);
+        movers.push({ row: r, delta: d });
+      });
+      movers.sort(function (a, b) { return b.delta - a.delta; });
+
+      var byLevel = {};
+      movers.forEach(function (m) {
+        var k = m.row.jobLevel || '—';
+        var g = byLevel[k] || (byLevel[k] = { n: 0, delta: 0, grade: m.row.gradeScore });
+        g.n++; g.delta += m.delta;
+      });
+
+      var dl = el('dl', { class: 'kv', style: 'margin-bottom:12px' });
+      [
+        ['ضریب فعلی', String(cfg.gradeImpactFactor)],
+        ['ضریب پیش‌نمایش', String(pending)],
+        ['سهم گرید از امتیاز کل', U.percent(gradeShare, 1)],
+        ['مبلغ جابه‌جاشده', U.money(moved / 2) + ' ریال'],
+        ['مجموع پرداخت', U.money(trial.totals.sumFinalKaraneh) + ' ریال']
+      ].forEach(function (l) {
+        dl.appendChild(el('dt', { text: l[0] }));
+        dl.appendChild(el('dd', { class: 'num', text: l[1] }));
+      });
+      previewBox.appendChild(dl);
+
+      if (pending === Number(cfg.gradeImpactFactor)) {
+        previewBox.appendChild(el('div', { class: 'small muted',
+          text: 'برای دیدن اثر، ضریب را تغییر دهید.' }));
+      } else {
+        previewBox.appendChild(U.alert(pending > 0 ? 'warn' : 'info',
+          pending > 0 ? 'اثر این تغییر' : 'حذف اثر گرید',
+          pending > 0
+            ? 'با این ضریب، ' + U.money(moved / 2) + ' ریال از افراد با سطح شغلی پایین‌تر ' +
+              'به افراد با سطح شغلی بالاتر منتقل می‌شود. مجموع پرداخت تغییر نمی‌کند.'
+            : 'سطح شغلی دیگر بر مبلغ کارانه اثری نخواهد داشت — همان وضعیت فایل مرجع.'));
+      }
+
+      /* Per job level: the honest summary, since grade acts by level. */
+      var levelTbl = el('table', { class: 'grid' });
+      levelTbl.appendChild(el('thead', {}, [el('tr', {}, [
+        el('th', { text: 'JL' }), el('th', { text: 'عدد گرید' }), el('th', { text: 'نفرات' }),
+        el('th', { text: 'تغییر مجموع (ریال)' }), el('th', { text: 'به ازای هر نفر' })
+      ])]));
+      var ltb = el('tbody');
+      Object.keys(byLevel).sort(function (a, b) {
+        return (byLevel[b].grade || 0) - (byLevel[a].grade || 0);
+      }).forEach(function (k) {
+        var g = byLevel[k];
+        ltb.appendChild(el('tr', {}, [
+          el('td', { class: 'mono', text: k }),
+          el('td', { class: 'num', text: g.grade === null ? '⚠ تعریف نشده' : U.score(g.grade, 0) }),
+          el('td', { class: 'num', text: U.int(g.n) }),
+          el('td', { class: 'num' + (g.delta < 0 ? ' neg' : ''), text: U.money(g.delta) }),
+          el('td', { class: 'num' + (g.delta < 0 ? ' neg' : ''), text: U.money(g.n ? g.delta / g.n : 0) })
+        ]));
+      });
+      levelTbl.appendChild(ltb);
+      previewBox.appendChild(el('div', { class: 'table-wrap', style: 'max-height:230px' }, [levelTbl]));
+    }
+
+    gradeBox.appendChild(el('p', { class: 'small muted', style: 'margin-top:0' },
+      [document.createTextNode(
+        'تأثیر گرید = عدد گرید × این ضریب، و به امتیاز عملکردی اضافه می‌شود (ستون G و L). ' +
+        'در فایل مرجع این ضریب صفر است، بنابراین سطح شغلی هیچ اثری بر مبلغ ندارد. ' +
+        'با افزایش آن، بودجه از سطوح پایین‌تر به سطوح بالاتر منتقل می‌شود — مجموع پرداخت ثابت می‌ماند.')]));
+
+    gradeBox.appendChild(el('div', {
+      style: 'display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:6px'
+    }, [
+      el('span', { class: 'small', text: 'ضریب تأثیر گرید' }),
+      factorInput,
+      slider,
+      btn('اعمال', function () { commitFactor(); }, 'primary'),
+      btn('صفر (مطابق فایل مرجع)', function () { setPending(0); }, 'sm')
+    ]));
+    gradeBox.appendChild(el('div', { class: 'small muted', style: 'margin-bottom:12px' },
+      [document.createTextNode('مقادیر متداول: ۰ (بی‌اثر) · ۰٫۲۵ (اثر ملایم) · ۰٫۵ (اثر متوسط) · ۱ (اثر کامل)')]));
+    gradeBox.appendChild(previewBox);
+    renderGradePreview();
+
+    main.appendChild(U.card('ضریب تأثیر گرید', gradeBox,
+      { hint: 'سلول D2 فایل مرجع — پیش‌نمایش پیش از اعمال' }));
+
+    /* -- grade table ---------------------------------------------------
+       Sorted by score rather than insertion order, with the step to the next
+       level shown: an out-of-place value is then visible at a glance instead
+       of hiding in a list. */
+    var gradeBody = el('div', {});
+    function renderGradeTable() {
+      U.clear(gradeBody);
+      var keys = Object.keys(cfg.gradeMap).sort(function (a, b) {
+        return cfg.gradeMap[a] - cfg.gradeMap[b];
+      });
+
+      var counts = {};
+      App.result.rows.forEach(function (r) {
+        if (r.inScope && r.jobLevel) counts[r.jobLevel] = (counts[r.jobLevel] || 0) + 1;
+      });
+      App.state.employees.forEach(function (e) {
+        var jl = Engine.normalizeJobLevel(e.jobLevel);
+        if (jl && counts[jl] === undefined) counts[jl] = 0;
+      });
+
+      var gt = el('table', { class: 'grid', id: 'gradeTable' });
+      gt.appendChild(el('thead', {}, [el('tr', {}, [
+        el('th', { text: 'JL' }), el('th', { text: 'عدد گرید' }),
+        el('th', { text: 'فاصله تا سطح قبل' }), el('th', { text: 'نفرات' }), el('th', { text: '' })
+      ])]));
+      var gtb = el('tbody');
+
+      keys.forEach(function (jl, i) {
+        var inp = el('input', { type: 'number', class: 'cell', step: '5' });
+        inp.value = cfg.gradeMap[jl];
+        inp.addEventListener('change', function () {
+          var v = Number(inp.value);
+          if (!isFinite(v)) { inp.value = cfg.gradeMap[jl]; return; }
+          var old = cfg.gradeMap[jl];
+          cfg.gradeMap[jl] = v;
+          auditConfig('gradeMap.' + jl, old, v);
+          save(); recalc();
+        });
+
+        var step = i === 0 ? null : cfg.gradeMap[jl] - cfg.gradeMap[keys[i - 1]];
+        var used = counts[jl];
+
+        gtb.appendChild(el('tr', {}, [
+          el('td', { class: 'mono', text: jl }),
+          el('td', {}, [inp]),
+          el('td', { class: 'num muted small',
+            text: step === null ? '—' : (step === 0 ? '⚠ برابر سطح قبل' : '+' + step) }),
+          el('td', { class: 'num' }, [
+            used === undefined
+              ? el('span', { class: 'muted', text: '—' })
+              : el('span', { class: used ? '' : 'muted', text: U.int(used) })
+          ]),
+          el('td', {}, [el('button', {
+            class: 'btn sm danger', text: 'حذف',
+            title: used ? used + ' نفر از این سطح استفاده می‌کنند' : '',
+            onclick: function () { removeGradeLevel(jl, used); }
+          })])
+        ]));
+      });
+      gt.appendChild(gtb);
+      gradeBody.appendChild(gt);
+
+      var newJl = el('input', { type: 'text', placeholder: 'JL مثلاً 5 یا 4H', style: 'width:120px' });
+      var newScore = el('input', { type: 'number', placeholder: 'عدد گرید', step: '5', style: 'width:120px' });
+      gradeBody.appendChild(el('div', { style: 'display:flex;gap:7px;margin-top:11px;align-items:center' }, [
+        newJl, newScore,
+        btn('افزودن', function () {
+          var k = Engine.normalizeJobLevel(newJl.value);
+          var v = Number(newScore.value);
+          if (!k || !isFinite(v)) { U.toast('سطح شغلی و عدد گرید را وارد کنید.', 'err'); return; }
+          if (cfg.gradeMap[k] !== undefined) { U.toast('این سطح از قبل تعریف شده است.', 'err'); return; }
+          cfg.gradeMap[k] = v;
+          auditConfig('gradeMap.' + k, '(جدید)', v);
+          newJl.value = ''; newScore.value = '';
+          save(); recalc();
+        }, 'primary')
+      ]));
+
+      /* Levels present in the data but absent from the table. */
+      var unmapped = {};
+      App.result.rows.forEach(function (r) {
+        if (r.inScope && r.gradeScore === null && r.jobLevel) unmapped[r.jobLevel] = 1;
+      });
+      App.state.employees.forEach(function (e) {
+        var jl = Engine.normalizeJobLevel(e.jobLevel);
+        if (jl && cfg.gradeMap[jl] === undefined) unmapped[jl] = 1;
+      });
+      var missingJl = Object.keys(unmapped);
+      if (missingJl.length) {
+        var fix = el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;margin-top:7px' });
+        missingJl.forEach(function (jl) {
+          fix.appendChild(btn('افزودن ' + jl, function () {
+            /* Seat it between its neighbours so no existing grade moves. */
+            var suggested = suggestGradeScore(jl);
+            cfg.gradeMap[jl] = suggested;
+            auditConfig('gradeMap.' + jl, '(جدید)', suggested);
+            save(); recalc();
+          }, 'sm primary'));
+        });
+        gradeBody.appendChild(U.alert('err', 'سطوح شغلی تعریف‌نشده',
+          'این سطوح در داده‌ها وجود دارند اما در جدول گرید نیستند: ' + missingJl.join('، ') +
+          ' — تا تعریف نشوند، امتیاز گرید این افراد محاسبه نمی‌شود.'));
+        gradeBody.appendChild(fix);
+      }
+
+      gradeBody.appendChild(el('div', { class: 'small muted', style: 'margin-top:10px' },
+        [document.createTextNode(
+          'تا وقتی ضریب تأثیر گرید صفر باشد، این اعداد بر مبلغ کارانه اثری ندارند.')]));
+    }
+
+    function removeGradeLevel(jl, used) {
+      var doIt = function () {
+        var old = cfg.gradeMap[jl];
+        delete cfg.gradeMap[jl];
+        auditConfig('gradeMap.' + jl, old, '(حذف شد)');
+        save(); recalc();
+      };
+      if (used) {
+        U.confirm(used + ' نفر سطح شغلی «' + jl + '» دارند. با حذف آن، امتیاز گرید این افراد ' +
+          'محاسبه نمی‌شود و در مرکز اعتبارسنجی خطا ثبت می‌شود. ادامه می‌دهید؟',
+          { danger: true, confirmLabel: 'حذف' }).then(function (ok) { if (ok) doIt(); });
+      } else doIt();
+    }
+
+    /**
+     * A starting figure for a level the table does not cover: the midpoint of
+     * its neighbours in the existing ladder, so nothing already agreed moves.
+     * It is a suggestion the user then confirms, never a silent decision.
+     */
+    function suggestGradeScore(jl) {
+      var base = parseFloat(jl);
+      var entries = Object.keys(cfg.gradeMap).map(function (k) {
+        return { key: k, rank: parseFloat(k), score: cfg.gradeMap[k], high: /H$/i.test(k) };
+      }).filter(function (e) { return isFinite(e.rank); })
+        .sort(function (a, b) { return a.score - b.score; });
+      if (!entries.length || !isFinite(base)) return 100;
+
+      var isHigh = /H$/i.test(jl);
+      var lower = null, upper = null;
+      entries.forEach(function (e) {
+        var r = e.rank + (e.high ? 0.5 : 0);
+        var mine = base + (isHigh ? 0.5 : 0);
+        if (r < mine && (!lower || e.score > lower.score)) lower = e;
+        if (r > mine && (!upper || e.score < upper.score)) upper = e;
+      });
+      if (lower && upper) return Math.round((lower.score + upper.score) / 2 / 5) * 5;
+      if (lower) return lower.score + 50;
+      if (upper) return Math.max(0, upper.score - 50);
+      return 100;
+    }
+
+    renderGradeTable();
     main.appendChild(U.card('جدول گرید (JL → عدد گرید)', gradeBody,
       { hint: 'جایگزین VLOOKUP جدول Data!C:D' }));
 
@@ -3049,6 +3299,14 @@
     ])));
   };
 
+  /** Shallow copy of a config with a few keys overridden, for previews. */
+  function mergeCfg(base, overrides) {
+    var out = {}, k;
+    for (k in base) if (base.hasOwnProperty(k)) out[k] = base[k];
+    for (k in overrides) if (overrides.hasOwnProperty(k)) out[k] = overrides[k];
+    return out;
+  }
+
   function setConfig(key, value) {
     var old = App.state.config[key];
     if (old === value) return;
@@ -3087,7 +3345,17 @@
         var s = window.SAMPLE_DATA, now = new Date().toISOString();
         App.state = freshState();
         Object.keys(s.config).forEach(function (k) {
-          if (App.state.config[k] !== undefined) App.state.config[k] = s.config[k];
+          if (App.state.config[k] === undefined) return;
+          /* Merge the grade table rather than replacing it: the sample carries
+             the workbook's six levels, but an organisation may have added its
+             own (2H, for one) and loading a demo must not delete them. */
+          if (k === 'gradeMap') {
+            Object.keys(s.config.gradeMap).forEach(function (jl) {
+              App.state.config.gradeMap[jl] = s.config.gradeMap[jl];
+            });
+            return;
+          }
+          App.state.config[k] = s.config[k];
         });
         App.state.questionnaires = s.employees.map(function (e, i) {
           var c = JSON.parse(JSON.stringify(e));

@@ -199,6 +199,91 @@ invariant('a fifth scored question is picked up from config',
   fiveQ.totals.inScopeCount === 100 &&
   Math.abs(fiveQ.totals.sumRawCoefficient - result.totals.sumRawCoefficient) > 1);
 
+/* Job level 2H — present in the payroll file, absent from the workbook table. */
+console.log('\n-- Grade ladder --');
+var ladder = Object.keys(Engine.DEFAULT_CONFIG.gradeMap)
+  .sort(function (a, b) { return Engine.DEFAULT_CONFIG.gradeMap[a] - Engine.DEFAULT_CONFIG.gradeMap[b]; });
+console.log(pad('  JL', 10) + lpad('score', 8) + lpad('step', 8));
+ladder.forEach(function (k, i) {
+  var v = Engine.DEFAULT_CONFIG.gradeMap[k];
+  var step = i ? v - Engine.DEFAULT_CONFIG.gradeMap[ladder[i - 1]] : null;
+  console.log(pad('  ' + k, 10) + lpad(v, 8) + lpad(step === null ? '—' : '+' + step, 8));
+});
+
+invariant('2H resolves through the grade lookup',
+  Engine.getGradeScore('2H', Engine.DEFAULT_CONFIG) === 225,
+  String(Engine.getGradeScore('2H', Engine.DEFAULT_CONFIG)));
+invariant('2H is case- and whitespace-insensitive',
+  Engine.getGradeScore(' 2h ', Engine.DEFAULT_CONFIG) === 225);
+invariant('2H sits between 2 and 3',
+  Engine.DEFAULT_CONFIG.gradeMap['2'] < Engine.DEFAULT_CONFIG.gradeMap['2H'] &&
+  Engine.DEFAULT_CONFIG.gradeMap['2H'] < Engine.DEFAULT_CONFIG.gradeMap['3']);
+invariant('adding 2H left every workbook grade untouched',
+  [['0', 100], ['1', 150], ['2', 200], ['3', 250], ['3H', 300], ['4', 350]]
+    .every(function (p) { return Engine.DEFAULT_CONFIG.gradeMap[p[0]] === p[1]; }));
+invariant('the ladder is strictly increasing',
+  ladder.every(function (k, i) {
+    return i === 0 || Engine.DEFAULT_CONFIG.gradeMap[k] > Engine.DEFAULT_CONFIG.gradeMap[ladder[i - 1]];
+  }));
+
+/* An employee on 2H must be scored, not dropped, once grade is switched on. */
+var with2H = sample.employees.map(function (e, i) {
+  if (i > 2) return e;
+  var c = {}; for (var k in e) c[k] = e[k];
+  c.jobLevel = '2H';
+  return c;
+});
+var run2H = Engine.calculate(with2H, Object.assign({}, config, {
+  gradeMap: Engine.DEFAULT_CONFIG.gradeMap, gradeImpactFactor: 1
+}));
+invariant('employees on 2H are scored, not flagged unmapped',
+  run2H.rows.slice(0, 3).every(function (r) { return r.gradeScore === 225 && r.gradeImpact === 225; }),
+  run2H.rows[0].gradeScore + ' / ' + run2H.rows[0].gradeImpact);
+invariant('a 2H population still reconciles to budget',
+  Math.abs(run2H.totals.sumFinalKaraneh - config.budget) < 1e-3);
+
+/* Grade impact factor: continuous, and money-neutral in total. */
+console.log('\n-- Grade impact factor sweep --');
+console.log(pad('  factor', 12) + lpad('grade share', 14) + lpad('sum payout', 22) + lpad('reconciles', 12));
+[0, 0.25, 0.5, 1, 2].forEach(function (f) {
+  var run = Engine.calculate(sample.employees, Object.assign({}, config, {
+    gradeMap: Engine.DEFAULT_CONFIG.gradeMap, gradeImpactFactor: f
+  }));
+  var gradeSum = run.rows.reduce(function (a, r) { return a + r.gradeImpact; }, 0);
+  var share = run.totals.sumTotalScore ? gradeSum / run.totals.sumTotalScore : 0;
+  var ok = Math.abs(run.totals.sumFinalKaraneh - config.budget) < 1e-3;
+  record('factor/' + f, ok, 'sum ' + run.totals.sumFinalKaraneh);
+  console.log(pad('  ' + f, 12) + lpad((share * 100).toFixed(1) + '%', 14) +
+              lpad(fixed(run.totals.sumFinalKaraneh, 2), 22) + lpad(ok ? 'PASS' : 'FAIL', 12));
+});
+
+var f0 = Engine.calculate(sample.employees, Object.assign({}, config, { gradeImpactFactor: 0 }));
+var f1 = Engine.calculate(sample.employees, Object.assign({}, config, {
+  gradeMap: Engine.DEFAULT_CONFIG.gradeMap, gradeImpactFactor: 1
+}));
+var idx0 = {}, idx1 = {};
+f0.rows.forEach(function (r) { idx0[r.employeeId] = r.finalKaraneh; });
+f1.rows.forEach(function (r) { idx1[r.employeeId] = r.finalKaraneh; });
+var gained = 0, lost = 0;
+Object.keys(idx0).forEach(function (id) {
+  var d = idx1[id] - idx0[id];
+  if (d > 0) gained += d; else lost -= d;
+});
+invariant('raising the factor redistributes rather than inflates',
+  Math.abs(gained - lost) < 1e-3 && gained > 0,
+  'gained ' + fixed(gained, 0) + ' vs lost ' + fixed(lost, 0));
+invariant('at factor 0 the grade contributes nothing',
+  f0.rows.every(function (r) { return r.gradeImpact === 0; }));
+invariant('higher job levels gain when the factor rises',
+  (function () {
+    var high = f1.rows.filter(function (r) { return r.inScope && r.gradeScore >= 300; });
+    var low = f1.rows.filter(function (r) { return r.inScope && r.gradeScore <= 150; });
+    if (!high.length || !low.length) return false;
+    var dHigh = high.reduce(function (a, r) { return a + (idx1[r.employeeId] - idx0[r.employeeId]); }, 0);
+    var dLow = low.reduce(function (a, r) { return a + (idx1[r.employeeId] - idx0[r.employeeId]); }, 0);
+    return dHigh > 0 && dLow < 0;
+  }()));
+
 var scaled = Engine.calculate(sample.employees, Object.assign({}, config, { budget: 250000000000 }));
 invariant('budget change rescales and reconciles',
   Math.abs(scaled.totals.sumFinalKaraneh - 250000000000) < 1e-3 || scaled.totals.overriddenCount > 0);
