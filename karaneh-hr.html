@@ -403,10 +403,15 @@ input.cell, select.cell {
   background: var(--edit-bg); border: 1px solid var(--edit-border); border-radius: 4px;
 }
 input:invalid, input.invalid { border-color: var(--err); background: var(--err-soft); }
-label.field { display: block; margin-bottom: 12px; }
+label.field { display: flex; flex-direction: column; margin-bottom: 12px; }
 label.field > span { display: block; font-size: 12px; color: var(--text-2); margin-bottom: 4px; }
 label.field > span b { color: var(--text); font-weight: 700; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 0 16px; }
+/* Field labels stay on one line — the explanation sits under the control — so
+   controls sitting side by side in a row all start on the same line. */
+.form-grid > label.field > span {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .checkline { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; font-size: 12.5px; }
 input[type="range"] { accent-color: var(--brand-dim); }
 input[type="checkbox"], input[type="radio"] { accent-color: var(--brand-dim); }
@@ -4534,30 +4539,32 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
   /**
    * The Irancell mark, drawn inline so it needs no asset request.
    *
-   * The plate is the brand's own proportions (132 x 62): the Persian wordmark
-   * over the group mark, both reversed out of the plate. On the dark bar the
-   * plate reads as the mark's own black, so a hairline keeps its edge visible.
+   * Same geometry as the supplied artwork (128 x 70): a black plate with the
+   * Persian wordmark over the group mark, both reversed out of it. The bar it
+   * sits on is nearly black, so a hairline keeps the plate's edge visible —
+   * without it the mark reads as loose white text.
    */
   function logoMark() {
     var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', '0 0 132 62');
-    svg.setAttribute('width', '70');
-    svg.setAttribute('height', '33');
+    svg.setAttribute('viewBox', '0 0 128 70');
+    svg.setAttribute('width', '62');
+    svg.setAttribute('height', '34');
     svg.setAttribute('role', 'img');
     svg.setAttribute('aria-label', 'ایرانسل MTN');
     svg.setAttribute('style', 'direction:ltr');
     svg.innerHTML =
-      '<rect x="1.1" y="1.1" width="129.8" height="59.8" rx="14"' +
-      ' fill="#000000" stroke="rgba(255,255,255,.55)" stroke-width="2.2"/>' +
+      '<rect x="1.2" y="1.2" width="125.6" height="67.6" rx="16"' +
+      ' fill="#000000" stroke="rgba(255,255,255,.45)" stroke-width="2.4"/>' +
       /* `start`, not `end`: inside an RTL text element the start edge is the
          right one, so the word runs leftwards from x. */
-      '<text x="105" y="31" text-anchor="start" fill="#ffffff" direction="rtl"' +
+      /* Centred, so the anchor does not depend on the run's direction. */
+      '<text x="64" y="37" text-anchor="middle" fill="#ffffff" direction="rtl"' +
       ' style="unicode-bidi:plaintext"' +
       ' font-family="MTN Irancell, Tahoma, sans-serif" font-weight="700"' +
-      ' font-size="27">ایرانسل</text>' +
-      '<text x="66" y="52" text-anchor="middle" fill="#ffffff"' +
+      ' font-size="25">ایرانسل</text>' +
+      '<text x="64" y="60" text-anchor="middle" fill="#ffffff"' +
       ' font-family="Arial, Helvetica, sans-serif" font-weight="700"' +
-      ' font-size="17" letter-spacing="1.6">MTN</text>';
+      ' font-size="15" letter-spacing="1.3">MTN</text>';
     return svg;
   }
 
@@ -5057,17 +5064,18 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
       el('label', { class: 'field' }, [el('span', { text: 'متن سؤال' }), siText]),
       el('div', { class: 'form-grid' }, [
         el('label', { class: 'field' }, [
-          el('span', { html: 'حداقل امتیاز کارانه برای فعال شدن این سؤال ' +
-            '<span class="muted small">— پاسخ به آن زیر این عدد امتیازی نمی‌گیرد</span>' }),
-          siMin
+          el('span', { text: 'حداقل امتیاز کارانه برای فعال شدن' }), siMin,
+          el('div', { class: 'small muted', style: 'margin-top:3px',
+            text: 'پاسخ به آن زیر این عدد امتیازی نمی‌گیرد' })
         ]),
         el('label', { class: 'field' }, [
-          el('span', { html: 'حداکثر امتیاز اثرگذاری ویژه <span class="muted small">— ستون N</span>' }),
-          siAmount
+          el('span', { text: 'حداکثر امتیاز اثرگذاری ویژه' }), siAmount,
+          el('div', { class: 'small muted', style: 'margin-top:3px', text: 'ستون N' })
         ]),
         el('label', { class: 'field' }, [
-          el('span', { html: 'گام امتیاز <span class="muted small">— امتیاز فقط مضربی از این عدد می‌گیرد</span>' }),
-          siStep
+          el('span', { text: 'گام امتیاز' }), siStep,
+          el('div', { class: 'small muted', style: 'margin-top:3px',
+            text: 'امتیاز فقط مضربی از این عدد می‌گیرد' })
         ])
       ]),
       (function () {
@@ -5626,7 +5634,7 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
       'شماره پرسنلی کلید یکتاست. رکورد تکراری بدون تأیید شما وارد نمی‌شود.',
       (isAdmin() ? [
         btn('ورود فایل پرسنل', function () { pickFiles('employee'); }, 'primary'),
-        btn('تولید فایل معاون بخش', function () { openPackageBuilder(); }),
+        isHodPackage() ? null : btn('تولید فایل معاون بخش', function () { openPackageBuilder(); }),
         btn('تمپلیت حقوق و دستمزد', function () { downloadEmployeeTemplate(); }),
         btn('خروجی', function () { exportSheet('employees'); }),
         App.state.employees.length ? btn('پاک کردن', function () { clearEmployees(); }, 'danger') : null
@@ -5654,9 +5662,9 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
        is the first thing they do, so it sits on the roster screen itself. */
     if (App.state.employees.length) {
       main.appendChild(U.card(
-        isAdmin() ? 'تحویل فایل و تفکیک پرسشنامه' : 'تفکیک پرسشنامه بین مدیران',
+        (isAdmin() && !isHodPackage()) ? 'تحویل فایل و تفکیک پرسشنامه' : 'تفکیک پرسشنامه بین مدیران',
         el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' }, [
-          isAdmin()
+          (isAdmin() && !isHodPackage())
             ? btn('تولید فایل معاون بخش', function () { openPackageBuilder(); }, 'primary')
             : null,
           btn('تمپلیت به تفکیک مدیر مستقیم', function () { openManagerSplit('directManager'); }),
@@ -5664,7 +5672,7 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
           btn('به تفکیک سطح شغلی', function () { downloadQuestionnaireTemplateByGroup('jobLevel'); }),
           btn('همهٔ حالت‌ها', function () { openManagerSplit(); }, 'ghost')
         ].filter(Boolean)),
-        { hint: isAdmin()
+        { hint: (isAdmin() && !isHodPackage())
           ? 'هر معاون یک فایل مستقل از سامانه، و هر مدیر یک فایل پرسشنامه با پرسنل خودش می‌گیرد'
           : 'هر مدیر یک فایل پرسشنامه با پرسنل خودش دریافت می‌کند' }));
     }
@@ -6734,17 +6742,20 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
         setConfig(key, v);
         renderView();
       });
+      /* The hint goes under the control, not into the label. A hint long
+         enough to wrap made its label two lines tall and pushed that one
+         field's input below the others in the row. */
       return el('label', { class: 'field' }, [
-        el('span', { html: U.esc(label) + (hint ? ' <span class="muted small">— ' + U.esc(hint) + '</span>' : '') }),
-        inp, echo
-      ]);
+        el('span', { text: label }),
+        inp,
+        hint ? el('div', { class: 'small muted', style: 'margin-top:3px', text: hint }) : null,
+        echo
+      ].filter(Boolean));
     }
 
     box.appendChild(el('div', { class: 'form-grid' }, [
       liveNumber('بودجه کل (ریال)', 'budget', '1000000',
-        App.state.budgetSource || null, function (v) {
-          return isFinite(v) ? U.money(v) + ' ریال' : '';
-        }),
+        App.state.budgetSource || null, function () { return ''; }),
       liveNumber('حداقل امتیاز جهت دریافت کارانه', 'minPerformanceThreshold', '0.25',
         'امتیاز کمتر یا مساوی این عدد، کارانهٔ صفر'),
       liveNumber('حداکثر امتیاز کارانه', 'maxPerformanceScore', '10',
@@ -7617,11 +7628,20 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
         'عنوان ستون‌ها هرچه باشد شناسایی می‌شود؛ قالب خالی هم از همان صفحه قابل دریافت است.'
       ], btn('رفتن به پرسنل', function () { go('employees'); }, 'sm primary')));
 
-      steps.appendChild(stepCard(3, 'برای هر معاون یک فایل بسازید', [
-        'در «پرسنل» گزینهٔ «تولید فایل معاون بخش» را بزنید و مبنای تفکیک را انتخاب کنید.',
-        'هر معاون یک فایل مستقل با پرسنل خودش می‌گیرد و در نقش معاون بخش باز می‌شود.',
-        'اگر می‌خواهید خودتان پاسخ‌ها را جمع کنید، به‌جای آن تمپلیت پرسشنامه را تفکیک کنید.'
-      ], btn('تولید فایل معاون بخش', function () { go('employees'); }, 'sm')));
+      /* Issuing handover files is HR's job. Inside one of those files the step
+         is noise — its holder splits the questionnaire among their managers
+         instead, which is the step below. */
+      steps.appendChild(isHodPackage()
+        ? stepCard(3, 'پرسشنامه را بین مدیران خود تقسیم کنید', [
+            'در «پرسنل» گزینهٔ «به تفکیک مدیر مستقیم» را بزنید.',
+            'برای هر مدیر یک فایل Excel جداگانه با پرسنل خودش تولید می‌شود.',
+            'هر فایل شیت BARS را دارد: شرح رفتاری هر سطح، برای اینکه همه یکسان امتیاز بدهند.'
+          ], btn('تفکیک پرسشنامه', function () { go('employees'); }, 'sm'))
+        : stepCard(3, 'برای هر معاون یک فایل بسازید', [
+            'در «پرسنل» گزینهٔ «تولید فایل معاون بخش» را بزنید و مبنای تفکیک را انتخاب کنید.',
+            'هر معاون یک فایل مستقل با پرسنل خودش می‌گیرد.',
+            'اگر می‌خواهید خودتان پاسخ‌ها را جمع کنید، به‌جای آن تمپلیت پرسشنامه را تفکیک کنید.'
+          ], btn('تولید فایل معاون بخش', function () { go('employees'); }, 'sm')));
 
       steps.appendChild(stepCard(4, 'پاسخ‌ها را وارد و بررسی کنید', [
         'فایل‌های برگشتی را در «ورود پاسخ‌ها» انتخاب کنید — چندتایی هم می‌شود.',
@@ -7789,9 +7809,10 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
         setConfig(key, v);
       });
       return el('label', { class: 'field' }, [
-        el('span', { html: U.esc(label) + (hint ? ' <span class="muted small">— ' + U.esc(hint) + '</span>' : '') }),
-        inp
-      ]);
+        el('span', { text: label }),
+        inp,
+        hint ? el('div', { class: 'small muted', style: 'margin-top:3px', text: hint }) : null
+      ].filter(Boolean));
     }
 
     var params = el('div', { class: 'form-grid' }, [
@@ -7819,10 +7840,12 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
     scope.addEventListener('change', function () { setConfig('normalizationScope', scope.value); });
 
     params.appendChild(el('label', { class: 'field' }, [
-      el('span', { html: 'نحوه اعمال حد نصاب <span class="muted small">— ستون I</span>' }), mode
+      el('span', { text: 'نحوه اعمال حد نصاب' }), mode,
+      el('div', { class: 'small muted', style: 'margin-top:3px', text: 'ستون I' })
     ]));
     params.appendChild(el('label', { class: 'field' }, [
-      el('span', { html: 'دامنه متناسب‌سازی ضرایب <span class="muted small">— «امتیاز کل بخش»</span>' }), scope
+      el('span', { text: 'دامنه متناسب‌سازی ضرایب' }), scope,
+      el('div', { class: 'small muted', style: 'margin-top:3px', text: '«امتیاز کل بخش»' })
     ]));
 
     [['normalizeCoefficients', 'متناسب‌سازی ضرایب (ستون R)'],

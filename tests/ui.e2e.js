@@ -94,6 +94,7 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
              p.left + p.width <= shell.parts[0].left + shell.parts[0].width + 1;
     }), JSON.stringify(shell.parts));
 
+
   console.log('\n== LOAD SAMPLE DATA ==');
   /* The workbook data goes in exactly as it stands — no fix-ups. The
      special-impact gate is what makes it reproduce Excel. */
@@ -842,6 +843,16 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   check('the budget is shown with thousand separators',
     payScreen.shown === '100,000,000,000', payScreen.shown);
 
+  /* Labels of different lengths must not stagger the controls beside them. */
+  var rowAlign = await page.evaluate(function () {
+    var tops = Array.prototype.map.call(
+      document.querySelectorAll('#main .card .form-grid > label.field input'),
+      function (i) { return Math.round(i.getBoundingClientRect().top); });
+    return { tops: tops, spread: tops.length ? Math.max.apply(null, tops) - Math.min.apply(null, tops) : 0 };
+  });
+  check('the budget fields line up despite labels of different lengths',
+    rowAlign.tops.length >= 3 && rowAlign.spread <= 1, rowAlign.tops.join(' , '));
+
   var liveBudget = await page.evaluate(function () {
     function setBudget(v) {
       var input = document.querySelector('#main input.num');
@@ -1118,6 +1129,19 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
 
   check('the personnel screen offers the manager split', hodSplit.hasSplit,
     hodSplit.labels.slice(0, 5).join(' , '));
+  /* Issuing further handover files is HR's job, not the head's. */
+  check('the handover file does not offer to issue handover files of its own',
+    !hodSplit.labels.some(function (l) { return l.indexOf('تولید فایل معاون بخش') !== -1; }),
+    hodSplit.labels.slice(0, 6).join(' , '));
+
+  var hodHelpSteps = await hodPage.evaluate(function () {
+    window.App.go('help');
+    return document.querySelector('#main').textContent;
+  });
+  check('the guide there drops the issue-a-file step',
+    hodHelpSteps.indexOf('تولید فایل معاون بخش') === -1 &&
+    /تفکیک/.test(hodHelpSteps));
+  await hodPage.evaluate(function () { window.App.go('employees'); });
 
   await hodPage.evaluate(function () { window.App.go('employees'); });
   await hodPage.waitForSelector('#main .card');
