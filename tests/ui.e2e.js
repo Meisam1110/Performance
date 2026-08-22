@@ -37,14 +37,37 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
 
   console.log('\n== BOOT ==');
   await page.goto(APP);
-  await page.waitForSelector('.topbar .brand', { timeout: 15000 });
+  await page.waitForSelector('.brandbar .title', { timeout: 15000 });
   check('page boots and renders the shell', true);
   check('no page errors on boot', pageErrors.length === 0, pageErrors.join(' | '));
 
   var navCount = await page.locator('.navitem').count();
-  var phaseCount = await page.locator('.navphase').count();
+  var phaseCount = await page.locator('.navphase-tag').count();
   check('navigation is split into two phases', phaseCount === 2, phaseCount + ' phase headers');
+  check('navigation sits in a horizontal bar',
+    await page.locator('.navbar .navitem').count() > 0);
   check('all navigation entries render for the admin role', navCount === 11, navCount + ' items');
+  var themed = await page.evaluate(function () {
+    var before = document.documentElement.getAttribute('data-theme');
+    document.getElementById('themeBtn').click();
+    var after = document.documentElement.getAttribute('data-theme');
+    document.getElementById('themeBtn').click();
+    return { before: before, after: after,
+             restored: document.documentElement.getAttribute('data-theme') };
+  });
+  check('the theme toggle switches modes',
+    themed.before === 'light' && themed.after === 'dark' && themed.restored === 'light',
+    themed.before + ' → ' + themed.after + ' → ' + themed.restored);
+  var brand = await page.evaluate(function () {
+    return getComputedStyle(document.documentElement).getPropertyValue('--brand').trim();
+  });
+  check('the MTN Irancell brand colour is in use', brand.toUpperCase() === '#FFCC00', brand);
+  var fontOk = await page.evaluate(function () {
+    return document.fonts ? document.fonts.check('700 14px "MTN Irancell"') : true;
+  });
+  check('the brand font is embedded and loaded', fontOk === true, String(fontOk));
+  var logo = await page.locator('.brandbar .logo svg').count();
+  check('the brand mark renders', logo === 1);
 
   console.log('\n== LOAD SAMPLE DATA ==');
   /* The workbook data goes in exactly as it stands — no fix-ups. The
@@ -102,8 +125,13 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   console.log('\n== DASHBOARD RENDERING ==');
   var kpiText = await page.locator('.kpi').allTextContents();
   check('KPI tiles render', kpiText.length >= 8, kpiText.length + ' tiles');
-  var topbar = await page.locator('.topbar').textContent();
-  check('top bar shows the budget', topbar.indexOf('100.00B') !== -1, topbar.replace(/\s+/g, ' ').trim());
+  var strip = await page.locator('.strip').textContent();
+  check('budget strip shows the budget', /100,000,000,000/.test(strip.replace(/\s+/g, '')),
+    strip.replace(/\s+/g, ' ').trim().slice(0, 90));
+  var railPct = await page.locator('.ringwrap .pct').textContent();
+  check('progress ring reports a percentage', /\d+٪/.test(railPct), railPct.trim());
+  var stepCount = await page.locator('.step').count();
+  check('progress rail lists the process steps', stepCount === 8, stepCount + ' steps');
   await page.waitForSelector('.chart svg', { timeout: 5000 });
   var chartCount = await page.locator('.chart svg').count();
   check('dashboard renders its charts', chartCount >= 5, chartCount + ' charts');
@@ -426,7 +454,7 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   var tplDownload = page.waitForEvent('download', { timeout: 20000 });
   await page.evaluate(function () {
     document.querySelectorAll('#main button').forEach(function (b) {
-      if (b.textContent.indexOf('تمپلیت با فهرست پرسنل') !== -1) b.click();
+      if (b.textContent.trim() === 'تمپلیت با فهرست پرسنل') b.click();
     });
   });
   var tplFile = path.join(downloadDir, (await tplDownload).suggestedFilename());
@@ -522,7 +550,7 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   var payrollDl = page.waitForEvent('download', { timeout: 20000 });
   await page.evaluate(function () {
     document.querySelectorAll('#main button').forEach(function (b) {
-      if (b.textContent.indexOf('قالب حقوق و دستمزد') !== -1) b.click();
+      if (b.textContent.trim() === 'خروجی کارانه') b.click();
     });
   });
   var payrollFile = path.join(downloadDir, (await payrollDl).suggestedFilename());
@@ -582,10 +610,14 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
     idxTotal ? Number(idxTotal[2]).toLocaleString('en-US') : 'missing');
 
   console.log('\n== EXCEL EXPORT ==');
-  var downloadPromise = page.waitForEvent('download', { timeout: 20000 });
   await page.evaluate(function () { window.App.go('reports'); });
   await page.waitForSelector('#main button.primary');
-  await page.locator('#main button.primary').first().click();
+  var downloadPromise = page.waitForEvent('download', { timeout: 20000 });
+  await page.evaluate(function () {
+    document.querySelectorAll('#main button').forEach(function (b) {
+      if (b.textContent.trim() === 'خروجی کامل Excel') b.click();
+    });
+  });
   var download = await downloadPromise;
   var file = path.join(downloadDir, download.suggestedFilename());
   await download.saveAs(file);
@@ -625,9 +657,131 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   check('exported payouts sum to the budget',
     near(exportedSum, 100000000000, 1e-2), exportedSum.toFixed(2));
 
+  console.log('\n== BARS SCALE IN THE TEMPLATE ==');
+  var barsSheet = XLSX0.utils.sheet_to_json(tplWb.Sheets['BARS'], { header: 1, defval: null });
+  var barsHeader = barsSheet.filter(function (r) { return r && r[0] === 'حوزه'; })[0];
+  check('the template carries a BARS sheet', !!tplWb.Sheets['BARS'],
+    tplWb.SheetNames.join(' | '));
+  check('BARS lists a level column per answer option',
+    barsHeader && barsHeader.length === 7, barsHeader ? barsHeader.length + ' columns' : 'missing');
+  var barsRows = barsSheet.filter(function (r) {
+    return r && r[0] && ['عملکرد / کارایی', 'رفتار شغلی', 'خروجی کار', 'اثرگذاری'].indexOf(r[0]) !== -1;
+  });
+  check('BARS carries a row per domain', barsRows.length === 4,
+    barsRows.map(function (r) { return r[0]; }).join(' , '));
+  check('each BARS cell holds a labelled behaviour',
+    barsRows.every(function (r) {
+      return r.slice(2, 7).every(function (c) { return c && /^\(/.test(c) && c.length > 40; });
+    }));
+  check('BARS anchor cells are set to wrap',
+    /wrapText="1"/.test(tplRaw), 'wrap style present');
+
+  console.log('\n== SPECIAL SCORE STEPS OF 50 ==');
+  var stepInfo = await page.evaluate(function () {
+    var cfg = window.App.state.config;
+    window.App.go('questionnaires');
+    var grid = window.App.grids.questionnaires;
+    grid.state.filter = '1';
+    grid.render();
+    var opts = [];
+    document.querySelectorAll('table.grid tbody select').forEach(function (sel) {
+      var vals = Array.prototype.map.call(sel.options, function (o) { return o.value; });
+      if (vals.indexOf('300') !== -1 && vals.indexOf('50') !== -1) opts = vals;
+    });
+    grid.state.filter = '';
+    grid.render();
+    return { step: cfg.specialImpactStep, options: opts,
+             snapped: [25, 74, 130].map(function (v) {
+               return window.KaranehEngine.snapToStep(v, cfg);
+             }) };
+  });
+  check('the special score step is 50', stepInfo.step === 50, String(stepInfo.step));
+  check('the picker offers only multiples of 50',
+    stepInfo.options.length > 1 &&
+    stepInfo.options.filter(function (v) { return v; })
+      .every(function (v) { return Number(v) % 50 === 0; }),
+    stepInfo.options.join(','));
+  check('off-step amounts snap onto the scale',
+    stepInfo.snapped.join(',') === '50,50,150', stepInfo.snapped.join(','));
+
+  console.log('\n== DELIVERY AND EMAIL ==');
+  var mailState = await page.evaluate(function () {
+    window.App.state.mail = {
+      performance: 'performance@mtnirancell.ir',
+      compensation: 'cnb@mtnirancell.ir',
+      cc: 'hrops@mtnirancell.ir'
+    };
+    window.App.save();
+    window.App.go('reports');
+    var chips = Array.prototype.map.call(document.querySelectorAll('#main .chip'),
+      function (c) { return c.textContent; }).join(' | ');
+    return { chips: chips };
+  });
+  check('reports names both recipient teams',
+    /performance@mtnirancell\.ir/.test(mailState.chips) &&
+    /cnb@mtnirancell\.ir/.test(mailState.chips),
+    mailState.chips.slice(0, 90));
+
+  var pkgDl = page.waitForEvent('download', { timeout: 20000 });
+  await page.evaluate(function () {
+    document.querySelectorAll('#main button').forEach(function (b) {
+      if (b.textContent.trim() === 'دریافت و ارسال بستهٔ نهایی') b.click();
+    });
+  });
+  var perfFile = path.join(downloadDir, (await pkgDl).suggestedFilename());
+  await (await pkgDl).saveAs(perfFile);
+  check('the performance file is produced', /Performance/.test(path.basename(perfFile)),
+    path.basename(perfFile));
+
+  var perfWb = XLSX0.read(fs.readFileSync(perfFile), { type: 'buffer' });
+  var perfRows = XLSX0.utils.sheet_to_json(perfWb.Sheets['Performance'], { header: 1, defval: null });
+  check('the performance file carries the BARS sheet',
+    perfWb.SheetNames.indexOf('BARS') !== -1, perfWb.SheetNames.join(' | '));
+  check('the performance file records the chosen anchor per question',
+    perfRows[0].filter(function (h) { return /— سطح$/.test(h || ''); }).length === 4,
+    perfRows[0].filter(function (h) { return /— سطح$/.test(h || ''); }).join(' , '));
+  check('the performance file contains no rial amount',
+    perfRows[0].every(function (h) { return !/ریال|کارانه نهایی|دریافتی/.test(h || ''); }),
+    perfRows[0].join(' , ').slice(0, 80));
+
+  await page.waitForTimeout(900);
+  var draftInfo = await page.evaluate(function () {
+    var links = Array.prototype.map.call(document.querySelectorAll('.modal a.btn'),
+      function (a) { return a.getAttribute('href') || ''; });
+    return { links: links.filter(function (h) { return h.indexOf('mailto:') === 0; }) };
+  });
+  check('two addressed drafts are prepared', draftInfo.links.length === 2,
+    draftInfo.links.length + ' mailto links');
+  check('the performance draft is addressed to the performance team',
+    draftInfo.links.some(function (h) { return h.indexOf('performance@mtnirancell.ir') !== -1; }));
+  check('the compensation draft is addressed to C&B',
+    draftInfo.links.some(function (h) { return h.indexOf('cnb@mtnirancell.ir') !== -1; }));
+  check('both drafts carry the CC',
+    draftInfo.links.every(function (h) { return h.indexOf('hrops%40mtnirancell.ir') !== -1; }));
+
+  await page.evaluate(function () {
+    var c = document.querySelector('.modal header .close'); if (c) c.click();
+  });
+
+  console.log('\n== DOWNLOAD TRAY ==');
+  var tray = await page.evaluate(function () {
+    var items = document.querySelectorAll('#dlTray .dl-item');
+    return {
+      count: items.length,
+      hrefs: Array.prototype.map.call(items, function (a) {
+        return (a.getAttribute('href') || '').slice(0, 5);
+      }),
+      hasDownloadAttr: Array.prototype.every.call(items, function (a) { return a.hasAttribute('download'); })
+    };
+  });
+  check('every produced file stays clickable in the tray', tray.count >= 2, tray.count + ' files');
+  check('tray entries are real blob links',
+    tray.hrefs.every(function (h) { return h === 'blob:'; }), tray.hrefs.join(','));
+  check('tray entries carry a download filename', tray.hasDownloadAttr);
+
   console.log('\n== PERSISTENCE ==');
   await page.reload();
-  await page.waitForSelector('.topbar .brand');
+  await page.waitForSelector('.brandbar .title');
   await page.waitForTimeout(700);
   var reloaded = await page.evaluate(function () {
     return { q: window.App.state.questionnaires.length,

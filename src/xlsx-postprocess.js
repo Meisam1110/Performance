@@ -258,13 +258,13 @@
     formatCodes.forEach(function (code) {
       var fmtId = nextFmtId++;
       newFmts += '<numFmt numFmtId="' + fmtId + '" formatCode="' + escapeXmlAttr(code) + '"/>';
-      formatStyle[code] = xfCount + 1 + Object.keys(formatStyle).length;
+      formatStyle[code] = xfCount + 2 + Object.keys(formatStyle).length;
       addedXfs += '<xf numFmtId="' + fmtId + '" fontId="0" fillId="0" borderId="0" xfId="0"' +
                   ' applyNumberFormat="1"/>';
     });
 
-    /* The header style occupies the first appended slot, the number formats
-       follow it — matching the order the entries are concatenated below. */
+    /* Appended in this order: header style, wrap style, then one slot per
+       number format — matching how the entries are concatenated below. */
     var headerStyle = xfCount;
 
     var fontsMatch = /<fonts count="(\d+)">/.exec(xml);
@@ -276,6 +276,11 @@
     var headerXf = '<xf numFmtId="0" fontId="' + headerFontId + '" fillId="' + headerFillId +
       '" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1">' +
       '<alignment horizontal="center" vertical="center" wrapText="1"/></xf>';
+
+    /* A wrapped, top-aligned body style for cells holding a paragraph — the
+       BARS anchors are unreadable without it. */
+    var wrapXf = '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"' +
+      ' applyAlignment="1"><alignment horizontal="right" vertical="top" wrapText="1"/></xf>';
 
     var out = xml;
 
@@ -302,10 +307,13 @@
       '<bgColor indexed="64"/></patternFill></fill></fills>');
 
     out = out.replace(/<cellXfs count="\d+">[\s\S]*?<\/cellXfs>/,
-      '<cellXfs count="' + (xfCount + 1 + formatCodes.length) + '">' +
-      xfBody + headerXf + addedXfs + '</cellXfs>');
+      '<cellXfs count="' + (xfCount + 2 + formatCodes.length) + '">' +
+      xfBody + headerXf + wrapXf + addedXfs + '</cellXfs>');
 
-    return { xml: out, headerStyle: headerStyle, formatStyle: formatStyle };
+    return {
+      xml: out, headerStyle: headerStyle, wrapStyle: xfCount + 1,
+      formatStyle: formatStyle
+    };
   }
 
   function escapeXmlAttr(s) {
@@ -363,19 +371,27 @@
    * @param headerStyle  cellXfs index for the header style
    * @param columnStyle  column letter → cellXfs index, applied below the header
    */
-  function styleCells(xml, headerRow, headerStyle, columnStyle) {
+  function styleCells(xml, headerRow, headerStyle, columnStyle, wrap, wrapStyle) {
     var hasColumnStyles = Object.keys(columnStyle).length > 0;
-    if (!headerRow && !hasColumnStyles) return xml;
+    if (!headerRow && !hasColumnStyles && !wrap) return xml;
 
     return xml.replace(/<c r="([A-Z]+)(\d+)"([^>]*)(\/?)>/g,
       function (whole, col, row, attrs, selfClose) {
         if (attrs.indexOf(' s="') !== -1) return whole;   // already styled
-        var rowNum = parseInt(row, 10), style;
+        var rowNum = parseInt(row, 10), colNum = colIndex(col), style;
         if (headerRow && rowNum === headerRow) style = headerStyle;
+        else if (wrap && rowNum >= wrap.from && rowNum <= wrap.to &&
+                 colNum >= wrap.fromCol && colNum <= wrap.toCol) style = wrapStyle;
         else if (rowNum > headerRow && columnStyle[col] !== undefined) style = columnStyle[col];
         if (style === undefined) return whole;
         return '<c r="' + col + row + '" s="' + style + '"' + attrs + selfClose + '>';
       });
+  }
+
+  function colIndex(letters) {
+    var n = 0;
+    for (var i = 0; i < letters.length; i++) n = n * 26 + (letters.charCodeAt(i) - 64);
+    return n - 1;
   }
 
   /**
@@ -449,7 +465,8 @@
             var idx = styles.formatStyle[fmts[col]];
             if (idx !== undefined) columnStyle[col] = idx;
           });
-          xml = styleCells(xml, spec.headerRow || 0, styles.headerStyle, columnStyle);
+          xml = styleCells(xml, spec.headerRow || 0, styles.headerStyle, columnStyle,
+                           spec.wrapRows, styles.wrapStyle);
         }
 
         if (xml === before) return;

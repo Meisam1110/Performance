@@ -189,15 +189,60 @@ invariant('equal weights reproduce the plain average',
   Math.abs(explicitEqual.totals.sumRawCoefficient - result.totals.sumRawCoefficient) < 1e-9);
 
 /* Adding a fifth scored question must be possible without touching code. */
-var fiveQ = Engine.calculate(sample.employees, Object.assign({}, config, {
-  questions: Engine.DEFAULT_CONFIG.questions.map(function (q) {
-    return { id: q.id, text: q.text, weight: 1, scored: true };
-  }),
-  questionCount: 5
+var extraQuestions = Engine.DEFAULT_CONFIG.questions.filter(function (q) { return !q.impact; })
+  .concat([{ id: 'q5', domain: 'یادگیری', text: 'سؤال افزوده', weight: 1, scored: true }]);
+var withQ5 = sample.employees.map(function (e) {
+  var c = {}; for (var k in e) c[k] = e[k];
+  c.q5 = e.q5 || 'متوسط';
+  return c;
+});
+var fiveQ = Engine.calculate(withQ5, Object.assign({}, config, {
+  questions: extraQuestions, questionCount: 5
 }));
 invariant('a fifth scored question is picked up from config',
   fiveQ.totals.inScopeCount === 100 &&
-  Math.abs(fiveQ.totals.sumRawCoefficient - result.totals.sumRawCoefficient) > 1);
+  Math.abs(fiveQ.totals.sumRawCoefficient - result.totals.sumRawCoefficient) > 1,
+  'inScope ' + fiveQ.totals.inScopeCount);
+
+/* A scored question nobody answered must invalidate, not silently score zero.
+   `qNew` has no column anywhere in the sample, so every record is short one
+   answer and must fall out of scope rather than scoring as if it were zero. */
+var unanswered = Engine.calculate(sample.employees, Object.assign({}, config, {
+  questions: extraQuestions.slice(0, 4).concat([
+    { id: 'qNew', domain: 'تازه', text: 'سؤالی که پاسخی ندارد', weight: 1, scored: true }
+  ]),
+  questionCount: 5
+}));
+invariant('a scored question with no answers marks records incomplete',
+  unanswered.totals.inScopeCount === 0 &&
+  unanswered.rows.every(function (r) { return r.performanceScore === null; }),
+  unanswered.totals.inScopeCount + ' in scope, ' +
+  unanswered.rows.filter(function (r) { return r.performanceScore === null; }).length + ' unscored');
+
+/* BARS: every question carries a domain and five behavioural anchors. */
+console.log('\n-- BARS instrument --');
+console.log(pad('  id', 10) + pad('domain', 28) + pad('scored', 9) + 'anchors');
+Engine.DEFAULT_CONFIG.questions.forEach(function (q) {
+  console.log(pad('  ' + q.id, 10) + pad(q.domain || '—', 28) +
+              pad(q.scored === false ? 'no' : 'yes', 9) +
+              (q.anchors || []).map(function (a) { return a.label; }).join(' · '));
+});
+invariant('every question carries a domain',
+  Engine.DEFAULT_CONFIG.questions.every(function (q) { return !!q.domain; }));
+invariant('every question carries five anchors',
+  Engine.DEFAULT_CONFIG.questions.every(function (q) {
+    return q.anchors && q.anchors.length === 5;
+  }));
+invariant('every anchor has a label and a description',
+  Engine.DEFAULT_CONFIG.questions.every(function (q) {
+    return q.anchors.every(function (a) { return a.label && a.text && a.text.length > 20; });
+  }));
+invariant('exactly one question drives special impact',
+  Engine.DEFAULT_CONFIG.questions.filter(function (q) { return q.impact; }).length === 1);
+invariant('the impact question is not scored',
+  Engine.DEFAULT_CONFIG.questions.filter(function (q) { return q.impact; })[0].scored === false);
+invariant('the four scored questions are the ones Merit uses',
+  Engine.scoredQuestions(Engine.DEFAULT_CONFIG).map(function (q) { return q.id; }).join(',') === 'q1,q2,q3,q4');
 
 /* Job level 2H — present in the payroll file, absent from the workbook table. */
 console.log('\n-- Grade ladder --');

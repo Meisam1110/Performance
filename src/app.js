@@ -38,17 +38,17 @@
   var NAV = [
     { phase: 1, label: 'ورود پرسشنامه و پاسخ سؤالات' },
     { id: 'designer',       icon: '🧩', label: 'طراحی پرسشنامه', adminOnly: true },
-    { id: 'employees',      icon: '👤', label: 'اطلاعات پرسنل',   adminOnly: true },
-    { id: 'import',         icon: '📥', label: 'ورود پرسشنامه‌ها', adminOnly: true },
-    { id: 'questionnaires', icon: '📝', label: 'مدیریت پرسشنامه', adminOnly: true },
-    { id: 'validation',     icon: '🛡', label: 'مرکز اعتبارسنجی' },
+    { id: 'employees',      icon: '👤', label: 'پرسنل',          adminOnly: true },
+    { id: 'import',         icon: '📥', label: 'ورود پاسخ‌ها',    adminOnly: true },
+    { id: 'questionnaires', icon: '📝', label: 'پاسخ‌ها',         adminOnly: true },
+    { id: 'validation',     icon: '🛡', label: 'اعتبارسنجی' },
     { phase: 2, label: 'محاسبه کارانه و تغییرات معاون بخش' },
     { id: 'dashboard',      icon: '▦',  label: 'داشبورد' },
-    { id: 'payment',        icon: '💰', label: 'روش پرداخت کارانه' },
-    { id: 'hod',            icon: '✍️', label: 'تغییرات معاون بخش', needsPhase1: true },
-    { id: 'reports',        icon: '📤', label: 'گزارش و خروجی' },
+    { id: 'payment',        icon: '💰', label: 'پرداخت کارانه' },
+    { id: 'hod',            icon: '✍️', label: 'معاون بخش', needsPhase1: true },
+    { id: 'reports',        icon: '📤', label: 'خروجی' },
     { group: 'سیستم' },
-    { id: 'audit',          icon: '🧾', label: 'ردیابی تغییرات' },
+    { id: 'audit',          icon: '🧾', label: 'ردیابی' },
     { id: 'settings',       icon: '⚙️', label: 'تنظیمات', adminOnly: true }
   ];
 
@@ -109,6 +109,7 @@
       if (!App.state.config) App.state.config = defaultConfig();
       if (!App.state.columnMappings) App.state.columnMappings = cloneMappings();
       if (!App.state.role) App.state.role = 'admin';
+      if (!App.state.theme) App.state.theme = 'light';
       if (!App.state.hodScope) App.state.hodScope = [];
       migrateConfig(App.state.config);
       App._keySeq = App.state.questionnaires.length;
@@ -205,6 +206,7 @@
     App.validation = buildValidation();
 
     renderNav();
+    renderRail();
     if (!options || options.repaint !== false) renderView();
     return App.result;
   }
@@ -380,50 +382,92 @@
   }
 
   /* ======================================================================
-   * Shell
+   * Shell — brand bar, horizontal navigation, budget strip, progress rail
    * ====================================================================*/
+
+  /** The MTN Irancell mark, drawn inline so it needs no asset request. */
+  function logoMark() {
+    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 132 62');
+    svg.setAttribute('width', '68');
+    svg.setAttribute('height', '32');
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', 'ایرانسل MTN');
+    svg.innerHTML =
+      '<rect x="1" y="1" width="130" height="60" rx="13" fill="#ffffff"/>' +
+      '<text x="66" y="28" text-anchor="middle" fill="#14161a" direction="rtl"' +
+      ' font-family="MTN Irancell, Tahoma, sans-serif" font-weight="700" font-size="25">ایرانسل</text>' +
+      '<text x="66" y="50" text-anchor="middle" fill="#14161a"' +
+      ' font-family="MTN Irancell, Arial, sans-serif" font-weight="700"' +
+      ' font-size="17" letter-spacing="1.5">MTN</text>';
+    return svg;
+  }
+
   function renderShell() {
     var root = document.getElementById('app');
     U.clear(root);
+    applyTheme();
 
-    root.appendChild(el('div', { class: 'topbar' }, [
-      el('span', { class: 'brand', text: 'سامانه مدیریت کارانه' }),
+    root.appendChild(el('div', { class: 'brandbar' }, [
+      el('span', { class: 'logo' }, [logoMark()]),
+      el('span', { class: 'title', text: 'سامانه مدیریت کارانه' }),
       el('span', { class: 'period', id: 'periodChip', text: App.state.period }),
-      el('button', {
-        class: 'role-pill', id: 'rolePill',
-        title: 'تغییر سطح دسترسی',
-        onclick: function () { openRolePicker(); }
-      }, [document.createTextNode(ROLES[role()].icon + '  ' + ROLES[role()].label)]),
       el('div', { class: 'spacer' }),
-      el('div', { class: 'topstat', id: 'topBudget' }),
-      el('div', { class: 'sep' }),
-      el('div', { class: 'topstat', id: 'topAllocated' }),
-      el('div', { class: 'sep' }),
-      el('div', { class: 'topstat', id: 'topRemaining' }),
-      el('div', { class: 'sep' }),
-      el('div', { class: 'topstat', id: 'topStatus' })
+      el('button', {
+        class: 'role-pill', id: 'rolePill', title: 'تغییر سطح دسترسی',
+        onclick: function () { openRolePicker(); }
+      }),
+      el('button', {
+        class: 'iconbtn', id: 'themeBtn', title: 'حالت روشن / تاریک',
+        onclick: function () { toggleTheme(); }
+      })
     ]));
 
-    var sidebar = el('nav', { class: 'sidebar', id: 'sidebar' });
+    root.appendChild(el('nav', { class: 'navbar', id: 'navbar' }));
+    root.appendChild(el('div', { class: 'strip', id: 'strip' }));
+
+    var rail = el('aside', { class: 'rail', id: 'rail' });
     var main = el('main', { class: 'main', id: 'main' });
-    root.appendChild(el('div', { class: 'shell' }, [main, sidebar]));
+    root.appendChild(el('div', { class: 'shell' }, [main, rail]));
+
     renderNav();
+    renderRail();
   }
 
+  /* ------------------------------------------------------------------ theme */
+  function applyTheme() {
+    var t = (App.state && App.state.theme) || 'light';
+    document.documentElement.setAttribute('data-theme', t);
+    var btn = document.getElementById('themeBtn');
+    if (btn) btn.textContent = t === 'dark' ? '☀' : '☾';
+  }
+
+  function toggleTheme() {
+    App.state.theme = App.state.theme === 'dark' ? 'light' : 'dark';
+    applyTheme();
+    save();
+    /* Charts read their colours from CSS custom properties at draw time, so
+       they have to be redrawn rather than recoloured. */
+    renderView();
+  }
+
+  /* -------------------------------------------------------------- navigation */
   function renderNav() {
-    var sidebar = document.getElementById('sidebar');
-    if (!sidebar) return;
-    U.clear(sidebar);
+    var bar = document.getElementById('navbar');
+    if (!bar) return;
+    U.clear(bar);
+
     NAV.forEach(function (n) {
       if (n.phase) {
-        sidebar.appendChild(el('div', { class: 'navphase' }, [
-          el('span', { class: 'n', text: String(n.phase) }),
-          el('span', { text: n.label })
+        if (n.phase > 1) bar.appendChild(el('span', { class: 'sep' }));
+        bar.appendChild(el('span', { class: 'navphase-tag', title: n.label }, [
+          el('span', { class: 'n', text: String(n.phase) })
         ]));
         return;
       }
-      if (n.group) { sidebar.appendChild(el('div', { class: 'navgroup', text: n.group })); return; }
+      if (n.group) { bar.appendChild(el('span', { class: 'sep' })); return; }
       if (n.adminOnly && !isAdmin()) return;
+
       var locked = n.needsPhase1 && !phase1Ready();
       var badge = null;
       if (n.id === 'validation') {
@@ -432,20 +476,21 @@
         else if (warns) badge = el('span', { class: 'badge warn', text: String(warns) });
       } else if (locked) {
         badge = el('span', { class: 'badge warn', text: '🔒' });
-      } else if (n.id === 'questionnaires') {
+      } else if (n.id === 'questionnaires' && App.state.questionnaires.length) {
         badge = el('span', { class: 'badge', text: String(App.state.questionnaires.length) });
-      } else if (n.id === 'employees') {
+      } else if (n.id === 'employees' && App.state.employees.length) {
         badge = el('span', { class: 'badge', text: String(App.state.employees.length) });
       } else if (n.id === 'hod') {
         var ov = App.result ? App.result.totals.overriddenCount : 0;
         if (ov) badge = el('span', { class: 'badge', text: String(ov) });
       }
-      sidebar.appendChild(el('button', {
+
+      bar.appendChild(el('button', {
         class: 'navitem' + (App.view === n.id ? ' active' : '') + (locked ? ' locked' : ''),
-        title: locked ? 'تا رفع خطاهای مرحلهٔ ۱ در دسترس نیست' : '',
+        title: locked ? 'تا رفع خطاهای مرحلهٔ ۱ در دسترس نیست' : n.label,
         onclick: function () {
           if (locked) {
-            U.toast('ابتدا باید خطاهای مرحلهٔ ۱ در مرکز اعتبارسنجی برطرف شوند.', 'warn', 5000);
+            U.toast('ابتدا باید خطاهای مرحلهٔ ۱ برطرف شوند.', 'warn', 5000);
             go('validation');
             return;
           }
@@ -457,29 +502,166 @@
         badge
       ]));
     });
+
     var pill = document.getElementById('rolePill');
     if (pill) pill.textContent = ROLES[role()].icon + '  ' + ROLES[role()].label;
-    renderTopStats();
+    applyTheme();
+    renderStrip();
   }
 
-  function renderTopStats() {
-    var t = App.result ? App.result.totals : null;
-    function set(id, value, label, color) {
-      var node = document.getElementById(id);
-      if (!node) return;
-      U.clear(node);
-      node.appendChild(el('b', {}, [U.bidi(value)]));
-      node.appendChild(el('span', { text: label }));
-      node.style.color = color || '';
+  /* ------------------------------------------------------------ budget strip */
+  function renderStrip() {
+    var strip = document.getElementById('strip');
+    if (!strip || !App.result) return;
+    var t = App.result.totals;
+    U.clear(strip);
+
+    function cell(value, label, kind) {
+      strip.appendChild(el('div', { class: 'cell ' + (kind || '') }, [
+        el('b', {}, [U.bidi(value)]),
+        el('span', { text: label })
+      ]));
+      strip.appendChild(el('div', { class: 'div' }));
     }
-    if (!t) return;
-    set('topBudget', U.moneyShort(t.budget), 'بودجه');
-    set('topAllocated', U.moneyShort(t.allocatedBudget), 'تخصیص‌یافته');
-    set('topRemaining', U.moneyShort(t.remainingBudget), 'باقیمانده',
-        t.remainingBudget < -1 ? '#ffd0cc' : '');
-    var label = t.budgetStatus === 'BALANCED' ? 'متوازن'
-              : t.budgetStatus === 'OVERRUN'  ? 'عبور از بودجه' : 'نامعتبر';
-    set('topStatus', label, 'وضعیت', t.budgetStatus === 'BALANCED' ? '#c8f2dd' : '#ffd0cc');
+    cell(U.money(t.budget), 'بودجه (ریال)');
+    cell(U.money(t.allocatedBudget), 'تخصیص‌یافته');
+    cell(U.money(t.remainingBudget), 'باقیمانده', t.remainingBudget < -1 ? 'bad' : '');
+    cell(U.int(t.eligibleCount), 'واجد شرایط');
+    cell(U.int(t.overriddenCount), 'تغییر معاون بخش');
+    var label = t.budgetStatus === 'BALANCED' ? 'متوازن' : 'نامعتبر';
+    strip.appendChild(el('div', { class: 'cell ' + (t.budgetStatus === 'BALANCED' ? 'ok' : 'bad') }, [
+      el('b', { text: label }), el('span', { text: 'وضعیت بودجه' })
+    ]));
+  }
+
+  /* ======================================================================
+   * Progress rail — how far the period has actually got
+   * ====================================================================*/
+
+  /**
+   * The steps the process passes through, each with a completion fraction.
+   * A step is only "done" when the thing it produces actually exists, so the
+   * ring cannot read 100% while something is still missing.
+   */
+  function progressSteps() {
+    var t = App.result ? App.result.totals : null;
+    var staff = App.state.employees.length;
+    var expected = App.state.employees.filter(isPayrollEligible).length || staff;
+    var answered = App.result
+      ? App.result.rows.filter(function (r) { return r.inScope && r.hasQuestionnaire; }).length
+      : 0;
+    var blockers = phase1Blockers().length;
+    var eligible = t ? t.eligibleCount : 0;
+    var reviewed = t ? t.overriddenCount : 0;
+
+    return [
+      {
+        id: 'designer', label: 'طراحی پرسشنامه',
+        meta: Engine.scoredQuestions(App.state.config).length + ' سؤال محاسباتی',
+        done: 1
+      },
+      {
+        id: 'employees', label: 'اطلاعات پرسنل',
+        meta: staff ? U.int(staff) + ' نفر' : 'وارد نشده',
+        done: staff ? 1 : 0
+      },
+      {
+        id: 'import', label: 'دریافت پاسخ‌ها',
+        meta: expected ? U.int(answered) + ' از ' + U.int(expected) : U.int(answered) + ' رکورد',
+        done: expected ? Math.min(1, answered / expected) : (answered ? 1 : 0)
+      },
+      {
+        id: 'validation', label: 'اعتبارسنجی',
+        meta: blockers ? blockers + ' مورد باز' : (answered ? 'بدون خطا' : 'در انتظار داده'),
+        done: answered ? (blockers ? 0 : 1) : 0,
+        blocked: blockers > 0
+      },
+      {
+        id: 'payment', label: 'محاسبه کارانه',
+        meta: eligible ? U.int(eligible) + ' نفر واجد شرایط' : 'در انتظار',
+        done: eligible ? 1 : 0
+      },
+      {
+        id: 'hod', label: 'تصمیم معاون بخش',
+        meta: reviewed ? U.int(reviewed) + ' مورد ثبت شده' : 'بدون تغییر',
+        done: phase1Ready() && eligible ? 1 : 0
+      },
+      {
+        id: 'validation', label: 'کنترل بودجه',
+        meta: t && t.budgetStatus === 'BALANCED' ? 'متوازن' : 'نامعتبر',
+        done: t && t.budgetStatus === 'BALANCED' && eligible ? 1 : 0
+      },
+      {
+        id: 'reports', label: 'نهایی‌سازی و ارسال',
+        meta: App.state.finalizedAt ? U.dateTime(App.state.finalizedAt) : 'انجام نشده',
+        done: App.state.finalizedAt ? 1 : 0
+      }
+    ];
+  }
+
+  function progressPercent() {
+    var steps = progressSteps();
+    var sum = steps.reduce(function (a, s) { return a + s.done; }, 0);
+    return steps.length ? sum / steps.length : 0;
+  }
+
+  function renderRail() {
+    var rail = document.getElementById('rail');
+    if (!rail) return;
+    U.clear(rail);
+
+    var steps = progressSteps();
+    var pct = progressPercent();
+
+    rail.appendChild(el('h3', { text: 'پیشرفت فرآیند' }));
+    rail.appendChild(el('div', { class: 'sub', text: App.state.period }));
+
+    /* Progress ring — one number the whole period can be judged by. */
+    var NS = 'http://www.w3.org/2000/svg';
+    var size = 118, stroke = 11, r = (size - stroke) / 2, c = 2 * Math.PI * r;
+    var svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + size + ' ' + size);
+    svg.setAttribute('width', size);
+    svg.setAttribute('height', size);
+    svg.innerHTML =
+      '<circle cx="' + size / 2 + '" cy="' + size / 2 + '" r="' + r + '" fill="none"' +
+      ' stroke="var(--surface-3)" stroke-width="' + stroke + '"/>' +
+      '<circle cx="' + size / 2 + '" cy="' + size / 2 + '" r="' + r + '" fill="none"' +
+      ' stroke="var(--brand)" stroke-width="' + stroke + '" stroke-linecap="round"' +
+      ' stroke-dasharray="' + c + '" stroke-dashoffset="' + (c * (1 - pct)) + '"' +
+      ' transform="rotate(-90 ' + size / 2 + ' ' + size / 2 + ')"/>' +
+      '<text class="pct" x="' + size / 2 + '" y="' + (size / 2 + 2) + '"' +
+      ' text-anchor="middle" dominant-baseline="middle">' + Math.round(pct * 100) + '٪</text>' +
+      '<text class="pctlabel" x="' + size / 2 + '" y="' + (size / 2 + 20) + '"' +
+      ' text-anchor="middle">تکمیل شده</text>';
+    rail.appendChild(el('div', { class: 'ringwrap' }, [svg]));
+
+    var list = el('ol', { class: 'steplist' });
+    var firstOpen = steps.filter(function (s) { return s.done < 1; })[0];
+    steps.forEach(function (s, i) {
+      var cls = s.done >= 1 ? 'done' : (s === firstOpen ? 'active' : '');
+      if (s.blocked) cls += ' blocked';
+      list.appendChild(el('li', {
+        class: 'step ' + cls,
+        title: 'رفتن به ' + s.label,
+        onclick: function () { if (canOpen(s.id)) go(s.id); else go('validation'); }
+      }, [
+        el('span', { class: 'dot', text: s.done >= 1 ? '✓' : String(i + 1) }),
+        el('span', {}, [
+          el('div', { class: 'label', text: s.label }),
+          el('div', { class: 'meta', text: s.meta })
+        ])
+      ]));
+    });
+    rail.appendChild(list);
+
+    if (App.state.finalizedAt) {
+      rail.appendChild(el('div', { class: 'railnote',
+        text: 'دوره نهایی شده است. فایل‌های خروجی از صفحهٔ «گزارش و خروجی» قابل دریافت‌اند.' }));
+    } else if (firstOpen) {
+      rail.appendChild(el('div', { class: 'railnote',
+        text: 'مرحلهٔ بعد: ' + firstOpen.label + ' — ' + firstOpen.meta }));
+    }
   }
 
   /* Exposed alongside `go` so automated tests and the browser console can
@@ -501,8 +683,6 @@
     var main = document.getElementById('main');
     if (!main) return;
     U.clear(main);
-    var banner = phaseBanner(App.view);
-    if (banner) main.appendChild(banner);
     var fn = VIEWS[App.view] || VIEWS.dashboard;
     fn(main);
   }
@@ -586,33 +766,6 @@
     });
   }
 
-  /** Banner naming the phase the current view belongs to. */
-  function phaseBanner(view) {
-    var current = null, phase = null;
-    NAV.forEach(function (n) {
-      if (n.phase) phase = n;
-      if (n.id === view) current = phase;
-    });
-    if (!current) return null;
-    var blockers = phase1Blockers().length;
-    return el('div', { class: 'phase-banner' }, [
-      el('span', { class: 'num', text: String(current.phase) }),
-      el('span', {}, [
-        el('b', { text: 'مرحلهٔ ' + current.phase + ' — ' + current.label })
-      ]),
-      el('div', { class: 'spacer' }),
-      current.phase === 1
-        ? el('span', {
-            class: 'chip ' + (phase1Ready() ? 'ok' : 'warn'),
-            text: phase1Ready() ? 'آمادهٔ ورود به مرحلهٔ ۲' : blockers + ' مورد باز'
-          })
-        : el('span', {
-            class: 'chip ' + (phase1Ready() ? 'ok' : 'err'),
-            text: phase1Ready() ? 'مرحلهٔ ۱ تکمیل شده' : 'مرحلهٔ ۱ هنوز کامل نیست'
-          })
-    ]);
-  }
-
   function head(title, subtitle, actions) {
     return el('div', { class: 'view-head' }, [
       el('div', {}, [el('h1', { text: title }), el('p', { text: subtitle || '' })]),
@@ -633,8 +786,7 @@
     var cfg = App.state.config;
 
     main.appendChild(head('طراحی پرسشنامه',
-      'متن سؤالات، وزن آن‌ها، مقیاس پاسخ و شرط سؤال اثرگذاری ویژه از اینجا تعیین می‌شود. ' +
-      'تمپلیت Excel و کل محاسبات بر همین اساس ساخته می‌شوند.',
+      'متن سؤالات، حوزه، لنگرهای رفتاری، وزن و شرط اثرگذاری ویژه. تمپلیت و محاسبات بر همین اساس ساخته می‌شوند.',
       [
         btn('دانلود تمپلیت پرسشنامه', function () { downloadQuestionnaireTemplate(); }, 'primary'),
         btn('بازنشانی به پرسشنامه مرجع', function () { resetQuestionnaire(); }, 'danger')
@@ -693,8 +845,21 @@
           save(); recalc();
         });
 
+        var domain = el('input', {
+          type: 'text', class: 'editable', style: 'width:190px;font-weight:700',
+          placeholder: 'حوزه'
+        });
+        domain.value = q.domain || '';
+        domain.addEventListener('change', function () {
+          if (domain.value.trim() === q.domain) return;
+          auditConfig('question.' + q.id + '.domain', q.domain, domain.value.trim());
+          q.domain = domain.value.trim();
+          save(); recalc();
+        });
+
         row.appendChild(el('div', { class: 'qhead' }, [
           el('span', { class: 'code', text: q.id.toUpperCase() }),
+          domain,
           scored
             ? el('span', { class: 'chip ok', text: 'در محاسبه' })
             : el('span', { class: 'chip', text: 'فقط اطلاعاتی' }),
@@ -714,9 +879,44 @@
         ]));
         row.appendChild(ta);
         row.appendChild(el('div', { class: 'qmeta' }, [
-          el('label', {}, [scoredCb, el('span', { text: 'در محاسبهٔ امتیاز عملکرد وارد شود' })]),
-          el('label', {}, [el('span', { text: 'وزن' }), weight])
+          q.impact
+            ? el('span', { class: 'chip brand', text: 'این سؤال امتیاز ویژه را تعیین می‌کند' })
+            : el('label', {}, [scoredCb, el('span', { text: 'در محاسبهٔ امتیاز عملکرد وارد شود' })]),
+          q.impact ? null : el('label', {}, [el('span', { text: 'وزن' }), weight])
         ]));
+
+        /* Behavioural anchors — the rater picks one of these, so they are the
+           substance of the instrument, not decoration. */
+        var anchors = el('div', { class: 'bars-grid' });
+        Object.keys(cfg.answerScale).forEach(function (optName, i) {
+          if (!q.anchors) q.anchors = [];
+          var a = q.anchors[i] || (q.anchors[i] = { label: '', text: '' });
+          var lab = el('input', {
+            type: 'text', class: 'cell', placeholder: 'برچسب رفتاری',
+            style: 'font-weight:700'
+          });
+          lab.value = a.label || '';
+          lab.addEventListener('change', function () {
+            auditConfig('question.' + q.id + '.anchor' + (i + 1) + '.label', a.label, lab.value.trim());
+            a.label = lab.value.trim();
+            save(); recalc();
+          });
+          var desc = el('textarea', { class: 'editable', placeholder: 'شرح رفتار در این سطح' });
+          desc.value = a.text || '';
+          desc.addEventListener('change', function () {
+            auditConfig('question.' + q.id + '.anchor' + (i + 1), a.text, desc.value.trim());
+            a.text = desc.value.trim();
+            save(); recalc();
+          });
+          anchors.appendChild(el('div', { class: 'bars-cell' }, [
+            el('div', { class: 'lvl' }, [
+              el('span', { class: 'n', text: String(cfg.answerScale[optName]) }),
+              el('span', { text: optName })
+            ]),
+            lab, desc
+          ]));
+        });
+        row.appendChild(anchors);
         listBox.appendChild(row);
       });
 
@@ -751,12 +951,27 @@
       setConfig('specialImpactMinScore', v);
     });
 
-    var siAmount = el('input', { type: 'number', class: 'editable', step: '10', style: 'width:100%' });
+    var step = Number(cfg.specialImpactStep) || 50;
+    var siAmount = el('input', {
+      type: 'number', class: 'editable', step: String(step), min: String(step),
+      style: 'width:100%'
+    });
     siAmount.value = cfg.specialImpactAmount;
     siAmount.addEventListener('change', function () {
       var v = Number(siAmount.value);
       if (!isFinite(v)) { siAmount.value = cfg.specialImpactAmount; return; }
+      /* Snap on the way in, so the stored value is always on the scale. */
+      v = Engine.snapToStep(v, cfg);
+      siAmount.value = v;
       setConfig('specialImpactAmount', v);
+    });
+
+    var siStep = el('input', { type: 'number', class: 'editable', step: '5', min: '1', style: 'width:100%' });
+    siStep.value = step;
+    siStep.addEventListener('change', function () {
+      var v = Number(siStep.value);
+      if (!isFinite(v) || v < 1) { siStep.value = step; return; }
+      setConfig('specialImpactStep', v);
     });
 
     /* How many people the current gate would actually let through. */
@@ -774,10 +989,25 @@
           siMin
         ]),
         el('label', { class: 'field' }, [
-          el('span', { html: 'امتیاز اثرگذاری ویژه <span class="muted small">— ستون N</span>' }),
+          el('span', { html: 'حداکثر امتیاز اثرگذاری ویژه <span class="muted small">— ستون N</span>' }),
           siAmount
+        ]),
+        el('label', { class: 'field' }, [
+          el('span', { html: 'گام امتیاز <span class="muted small">— امتیاز فقط مضربی از این عدد می‌گیرد</span>' }),
+          siStep
         ])
       ]),
+      (function () {
+        /* The permitted bands, spelled out — this is what the rater picks. */
+        var wrap = el('div', { class: 'scale-preview' });
+        var st = Number(cfg.specialImpactStep) || 50;
+        for (var v = st; v <= (Number(cfg.specialImpactAmount) || st); v += st) {
+          wrap.appendChild(el('span', { text: U.score(v, 0) }));
+        }
+        return el('div', {}, [
+          el('div', { class: 'small muted', text: 'امتیازهای مجاز:' }), wrap
+        ]);
+      }()),
       App.result.totals.inScopeCount
         ? U.alert('info', 'اثر حد نصاب فعلی',
             eligibleForSpecial + ' نفر از ' + App.result.totals.inScopeCount +
@@ -858,9 +1088,10 @@
         el('dd', { text: Tpl.describe(cfg).options.split('|').join('، ') })
       ]),
       el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, [
-        btn('📄 تمپلیت خالی', function () { downloadQuestionnaireTemplate({ prefill: false }); }),
-        btn('👥 تمپلیت با فهرست پرسنل', function () { downloadQuestionnaireTemplate({ prefill: true }); }, 'primary'),
-        btn('🏢 تمپلیت به تفکیک واحد', function () { downloadQuestionnaireTemplatePerDivision(); })
+        btn('تمپلیت خالی', function () { downloadQuestionnaireTemplate({ prefill: false }); }),
+        btn('تمپلیت با فهرست پرسنل', function () { downloadQuestionnaireTemplate({ prefill: true }); }, 'primary'),
+        btn('به تفکیک سطح شغلی', function () { downloadQuestionnaireTemplateByGroup('jobLevel'); }),
+        btn('به تفکیک واحد سازمانی', function () { downloadQuestionnaireTemplateByGroup('division'); })
       ])
     ])));
   };
@@ -946,8 +1177,8 @@
         ? 'دید یک‌نگاهی از کل فرآیند. نمودارها، جدول یکپارچه و فیلترها همگی به یک مجموعه داده متصل‌اند.'
         : 'دید واحدهای تحت مسئولیت شما.',
       [
-        btn('📊 خروجی کارانه (قالب حقوق و دستمزد)', function () { exportPayrollFile(); }, 'primary'),
-        btn('👔 خروجی به تفکیک مدیر', function () { exportByManager(); }),
+        btn('خروجی کارانه', function () { exportPayrollFile(); }, 'primary'),
+        btn('خروجی به تفکیک سطح / مدیر', function () { exportByManager(); }),
         btn('گزارش کامل', function () { go('reports'); }, 'ghost')
       ]));
 
@@ -1272,7 +1503,7 @@
    * ====================================================================*/
   VIEWS.employees = function (main) {
     main.appendChild(head('اطلاعات پرسنل',
-      'شماره پرسنلی کلید یکتای سیستم است. رکورد تکراری بدون تأیید شما وارد نمی‌شود.',
+      'شماره پرسنلی کلید یکتاست. رکورد تکراری بدون تأیید شما وارد نمی‌شود.',
       [
         btn('📄 دانلود تمپلیت حقوق و دستمزد', function () { downloadEmployeeTemplate(); }),
         btn('ورود فایل پرسنل', function () { pickFiles('employee'); }, 'primary'),
@@ -1280,10 +1511,7 @@
         App.state.employees.length ? btn('پاک کردن', function () { clearEmployees(); }, 'danger') : null
       ].filter(Boolean)));
 
-    main.appendChild(U.alert('info', 'تمپلیت هماهنگ با فایل تیم حقوق و دستمزد',
-      'ستون‌های تمپلیت دقیقاً همان ستون‌های فایل «کارانه بهار ۱۴۰۵-Q1» است ' +
-      '(Emp No، Emp Status، Job Level، Division Alias، Working Day\'s، Manager Level 1..3 و …)، ' +
-      'بنابراین خروجی تیم حقوق و دستمزد بدون تغییر قابل ورود است و خروجی نهایی نیز در همان قالب تولید می‌شود.'));
+
 
     if (!App.state.employees.length) {
       main.appendChild(dropzoneNode('employee',
@@ -1358,31 +1586,18 @@
    * ====================================================================*/
   VIEWS.import = function (main) {
     main.appendChild(head('ورود پرسشنامه‌های تیمی',
-      'چند فایل را همزمان انتخاب کنید. سیستم شیت «پرسشنامه کارانه تیمی» را پیدا می‌کند، ' +
-      'ردیف عنوان را تشخیص می‌دهد، ستون‌ها را نگاشت می‌کند، ساختار را با تمپلیت مقایسه می‌کند ' +
-      'و همه را در یک مجموعه واحد ادغام می‌کند.',
+      'چند فایل تکمیل‌شده را همزمان انتخاب کنید؛ ساختار با تمپلیت مقایسه و همه در یک مجموعه ادغام می‌شود.',
       [btn('انتخاب فایل‌ها', function () { pickFiles('questionnaire'); }, 'primary')]));
 
-    main.appendChild(U.card('۱. دانلود تمپلیت', el('div', {}, [
-      el('p', { class: 'small muted', style: 'margin-top:0',
-        text: 'تمپلیت بر اساس طراحی فعلی پرسشنامه ساخته می‌شود: هر سؤال یک ستون، ' +
-              'گزینه‌های پاسخ به‌صورت فهرست کشویی، و فهرست پرسنل از پیش پر شده. ' +
-              'فایل امضای طراحی را در خود دارد تا هنگام بازگشت، هر ناسازگاری تشخیص داده شود.' }),
-      el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, [
-        btn('👥 تمپلیت با فهرست پرسنل', function () { downloadQuestionnaireTemplate({ prefill: true }); }, 'primary'),
-        btn('🏢 به تفکیک واحد سازمانی', function () { downloadQuestionnaireTemplatePerDivision(); }),
-        btn('📄 تمپلیت خالی', function () { downloadQuestionnaireTemplate({ prefill: false }); }),
-        btn('🧩 تغییر طراحی پرسشنامه', function () { go('designer'); }, 'ghost')
-      ]),
-      el('div', { class: 'small muted', style: 'margin-top:9px' }, [
-        document.createTextNode('امضای طراحی فعلی: '),
-        el('span', { class: 'mono', text: Tpl.signature(App.state.config) })
-      ])
-    ]), { hint: 'مطابق طراحی فعلی پرسشنامه' }));
-
-    main.appendChild(el('h2', {
-      style: 'font-size:14px;margin:18px 0 9px;font-weight:700'
-    }, [document.createTextNode('۲. ورود فایل‌های تکمیل‌شده')]));
+    main.appendChild(U.card('دانلود تمپلیت', el('div', {
+      style: 'display:flex;gap:8px;flex-wrap:wrap'
+    }, [
+      btn('تمپلیت با فهرست پرسنل', function () { downloadQuestionnaireTemplate({ prefill: true }); }, 'primary'),
+      btn('به تفکیک سطح شغلی', function () { downloadQuestionnaireTemplateByGroup('jobLevel'); }),
+      btn('به تفکیک واحد سازمانی', function () { downloadQuestionnaireTemplateByGroup('division'); }),
+      btn('تمپلیت خالی', function () { downloadQuestionnaireTemplate({ prefill: false }); }),
+      btn('طراحی پرسشنامه', function () { go('designer'); }, 'ghost')
+    ])));
 
     main.appendChild(dropzoneNode('questionnaire',
       'فایل‌های پرسشنامه را اینجا رها کنید',
@@ -1891,8 +2106,7 @@
    * ====================================================================*/
   VIEWS.questionnaires = function (main) {
     main.appendChild(head('مدیریت پرسشنامه کارانه تیمی',
-      'پاسخ‌ها را می‌توان مستقیماً در همین جدول ثبت کرد یا از فایل تکمیل‌شده وارد کرد — ' +
-      'هر دو مسیر به یک مجموعهٔ واحد می‌رسند. خانه‌های زردرنگ ورودی کاربر و خانه‌های خاکستری محاسباتی هستند.',
+      'پاسخ‌ها را در همین جدول ثبت کنید یا از فایل تکمیل‌شده وارد کنید.',
       [
         btn('＋ افزودن فرد', function () { addManualRecord(); }, 'primary'),
         btn('📥 ورود از فایل', function () { go('import'); }),
@@ -1925,13 +2139,30 @@
 
     var answerOptions = Object.keys(cfg.answerScale);
 
+    /** Anchor text for one question at one answer, for tooltips and the panel. */
+    function anchorFor(question, answer) {
+      if (!question || !question.anchors) return null;
+      var score = cfg.answerScale[String(answer).trim()];
+      if (score === undefined) return null;
+      var idx = answerOptions.indexOf(String(answer).trim());
+      return question.anchors[idx] || null;
+    }
+
     function answerCell(qKey) {
+      var question = cfg.questions.filter(function (x) { return x.id === qKey; })[0];
       return function (r) {
         var q = questionnaireByKey(r._input._key);
         var sel = el('select', { class: 'cell' });
         sel.appendChild(el('option', { value: '', text: '—' }));
-        answerOptions.forEach(function (o) {
-          sel.appendChild(el('option', { value: o, text: o + ' (' + App.state.config.answerScale[o] + ')' }));
+        answerOptions.forEach(function (o, i) {
+          var a = question && question.anchors ? question.anchors[i] : null;
+          sel.appendChild(el('option', {
+            value: o,
+            /* The behavioural label is what the rater is actually choosing;
+               the wording alone does not say what it means. */
+            text: (a && a.label ? a.label + ' — ' : '') + o,
+            title: a ? a.text : ''
+          }));
         });
         var cur = q ? q[qKey] : '';
         sel.value = (cur === null || cur === undefined) ? '' : String(cur);
@@ -1942,7 +2173,13 @@
           sel.value = String(cur);
           sel.classList.add('invalid');
         }
+        function syncTitle() {
+          var a = anchorFor(question, sel.value);
+          sel.title = a ? (a.label + ' — ' + a.text) : (question ? question.text : '');
+        }
+        syncTitle();
         sel.addEventListener('change', function () {
+          syncTitle();
           editField(q, qKey, sel.value === '' ? null : sel.value, 'ویرایش پاسخ پرسشنامه');
         });
         return sel;
@@ -1971,18 +2208,19 @@
         { key: 'division', label: 'واحد سازمانی', group: 'شناسایی' },
         { key: 'positionTitle', label: 'عنوان شغلی', width: '150px', group: 'شناسایی', hidden: true },
         { key: 'jobLevel', label: 'JL', width: '48px', group: 'شناسایی' }
-      ].concat(cfg.questions.map(function (q, i) {
+      ].concat(cfg.questions.filter(function (q) { return !q.impact; }).map(function (q) {
         return {
           key: q.id,
-          label: q.id.toUpperCase() + (q.scored === false ? ' (اطلاعاتی)' : ''),
-          group: 'پاسخ سؤالات', editable: true, width: '112px',
-          title: q.text + (q.scored === false
-            ? '\n\nدر محاسبهٔ امتیاز عملکرد وارد نمی‌شود.'
-            : '\n\nوزن: ' + (q.weight === undefined ? 1 : q.weight)),
+          label: q.domain || q.id.toUpperCase(),
+          group: 'پاسخ سؤالات', editable: true, width: '130px',
+          title: q.id.toUpperCase() + ' — ' + q.text +
+            '\n\nوزن: ' + (q.weight === undefined ? 1 : q.weight),
           render: answerCell(q.id)
         };
       })).concat([
-        { key: 'specialProject', label: 'اثرگذاری ویژه', group: 'اثرگذاری ویژه', editable: true,
+        { key: 'specialProject',
+          label: (cfg.questions.filter(function (q) { return q.impact; })[0] || {}).domain || 'اثرگذاری ویژه',
+          group: 'اثرگذاری ویژه', editable: true,
           title: cfg.specialImpactQuestion + '\n\nتنها از امتیاز کارانه ' +
                  cfg.specialImpactMinScore + ' به بالا قابل پاسخ است.',
           render: function (r) {
@@ -2010,17 +2248,24 @@
             if (!r.specialImpactUnlocked) {
               return el('span', { class: 'muted', text: r.specialProject ? '۰ (اعمال نشد)' : '—' });
             }
-            var inp = el('input', { type: 'number', class: 'cell', step: '1',
-              /* The default only applies once the flag is set; showing it on a
-                 disabled cell would read as a live value. */
-              placeholder: r.specialProject ? String(cfg.specialImpactAmount) : '—' });
-            inp.value = q && q.specialImpactAmount ? q.specialImpactAmount : '';
-            inp.disabled = !r.specialProject;
-            inp.addEventListener('change', function () {
-              editField(q, 'specialImpactAmount', inp.value === '' ? null : Number(inp.value),
+            /* The scale moves in fixed steps, so this is a list of the
+               permitted bands rather than a free number. */
+            var step = Number(cfg.specialImpactStep) || 50;
+            var max = Number(cfg.specialImpactAmount) || step;
+            var sel = el('select', { class: 'cell' });
+            sel.appendChild(el('option', { value: '', text: '—' }));
+            for (var v = step; v <= max; v += step) {
+              sel.appendChild(el('option', { value: String(v), text: U.score(v, 0) }));
+            }
+            var cur = q && q.specialImpactAmount
+              ? String(Engine.snapToStep(Number(q.specialImpactAmount), cfg)) : '';
+            sel.value = cur;
+            sel.disabled = !r.specialProject;
+            sel.addEventListener('change', function () {
+              editField(q, 'specialImpactAmount', sel.value === '' ? null : Number(sel.value),
                 'تغییر امتیاز اثرگذاری ویژه');
             });
-            return inp;
+            return sel;
           } },
         { key: 'performanceScore', label: 'امتیاز عملکرد', type: 'score', calculated: true,
           group: 'محاسبات', title: 'ستون K فایل مرجع — میانگین Q1..Q4' },
@@ -2173,7 +2418,7 @@
   VIEWS.payment = function (main) {
     var t = App.result.totals;
     main.appendChild(head('روش پرداخت کارانه',
-      'معادل شیت «روش پرداخت کارانه» فایل مرجع. ترتیب و معنای ستون‌ها حفظ شده است.',
+      'معادل شیت «روش پرداخت کارانه» فایل مرجع.',
       [
         btn('خروجی', function () { exportSheet('payment'); }),
         btn('تنظیم بودجه', function () { go('settings'); })
@@ -2199,12 +2444,6 @@
       { kind: t.hodRedistribution < 0 ? 'warn' : '' }));
     main.appendChild(strip);
 
-    if (App.state.config.gradeImpactFactor === 0) {
-      main.appendChild(U.alert('info', 'ضریب تأثیر گرید برابر صفر است',
-        'در فایل مرجع (سلول D2) نیز این مقدار صفر بوده و به همین دلیل سطح شغلی روی مبلغ کارانه اثری ندارد. ' +
-        'برای فعال‌کردن اثر گرید، این ضریب را در تنظیمات تغییر دهید.',
-        btn('تنظیمات', function () { go('settings'); }, 'sm')));
-    }
 
     var grid = U.DataGrid({
       title: 'جدول پرداخت کارانه',
@@ -2292,8 +2531,7 @@
       return;
     }
     main.appendChild(head('تغییرات معاون بخش',
-      'معاون بخش می‌تواند مبلغ نهایی هر فرد را تعیین کند. ثبت توضیح اجباری است و ' +
-      'اختلاف مبلغ بین سایر افراد سرشکن می‌شود تا مجموع پرداخت از بودجه عبور نکند.'));
+      'تعیین مبلغ نهایی هر فرد. ثبت توضیح اجباری است و اختلاف بین سایرین سرشکن می‌شود.'));
 
     var overridden = App.result.rows.filter(function (r) { return r.isOverridden; });
     var sumOverride = 0;
@@ -2811,6 +3049,8 @@
         recalc();
         U.toast('محاسبات نهایی شد.', 'ok');
         go('reports');
+        /* Finalising is the moment the two teams need their files. */
+        setTimeout(function () { sendFinalPackage(); }, 400);
       });
     });
   }
@@ -3272,6 +3512,61 @@
     }, 'danger'));
     main.appendChild(U.card('نگاشت هوشمند ستون‌ها', mapBody, { hint: 'قابل ویرایش توسط مدیر سیستم' }));
 
+    /* -- delivery recipients ------------------------------------------- */
+    var m = mailConfig();
+    var mailBody = el('div', {});
+
+    function addressRow(who, key, hint) {
+      var inp = el('input', { type: 'text', class: 'editable', placeholder: 'name@mtnirancell.ir' });
+      inp.value = m[key] || '';
+      var note = el('span', { class: 'small' });
+      function validate() {
+        var bad = invalidAddresses(inp.value);
+        U.clear(note);
+        if (!inp.value.trim()) {
+          note.appendChild(el('span', { class: 'chip', text: 'ثبت نشده' }));
+        } else if (bad.length) {
+          note.appendChild(el('span', { class: 'chip err', text: 'نامعتبر: ' + bad.join('، ') }));
+        } else {
+          note.appendChild(el('span', { class: 'chip ok',
+            text: parseAddresses(inp.value).length + ' نشانی' }));
+        }
+        inp.classList.toggle('invalid', bad.length > 0);
+      }
+      validate();
+      inp.addEventListener('input', validate);
+      inp.addEventListener('change', function () {
+        if (m[key] === inp.value.trim()) return;
+        auditConfig('mail.' + key, m[key], inp.value.trim());
+        m[key] = inp.value.trim();
+        save();
+      });
+      mailBody.appendChild(el('div', { class: 'mailrow' }, [
+        el('span', { class: 'who', text: who }), inp, note
+      ]));
+      if (hint) mailBody.appendChild(el('div', { class: 'small muted', style: 'margin:-4px 0 10px 158px' },
+        [document.createTextNode(hint)]));
+    }
+
+    addressRow('تیم عملکرد', 'performance', 'نتایج ارزیابی — بدون هیچ مبلغی');
+    addressRow('تیم جبران خدمات', 'compensation', 'مبالغ نهایی در قالب فایل حقوق و دستمزد');
+    addressRow('رونوشت (اختیاری)', 'cc', '');
+
+    mailBody.appendChild(el('div', { style: 'margin-top:10px;display:flex;gap:8px;flex-wrap:wrap' }, [
+      btn('پیش‌نمایش ارسال', function () {
+        if (!App.result || !App.result.totals.inScopeCount) {
+          U.toast('ابتدا پرسشنامه‌ها را وارد کنید.', 'warn'); return;
+        }
+        sendFinalPackage();
+      }, 'primary')
+    ]));
+    mailBody.appendChild(el('div', { class: 'small muted', style: 'margin-top:9px' },
+      [document.createTextNode(
+        'صفحه در مرورگر اجرا می‌شود و خودش ایمیل نمی‌فرستد: فایل‌ها را می‌سازد و ' +
+        'پیش‌نویس آدرس‌دهی‌شده را باز می‌کند تا پیوست کنید.')]));
+
+    main.appendChild(U.card('گیرندگان ارسال نهایی', mailBody));
+
     /* -- period & data ------------------------------------------------- */
     var periodInput = el('input', { type: 'text', class: 'editable', style: 'width:100%' });
     periodInput.value = App.state.period;
@@ -3394,7 +3689,7 @@
   VIEWS.reports = function (main) {
     var t = App.result.totals;
     main.appendChild(head('گزارش و خروجی',
-      'خروجی Excel شامل تمام شیت‌های موردنیاز است و قالب‌بندی فایل مرجع را حفظ می‌کند.'));
+      'دریافت فایل‌های خروجی و ارسال به تیم‌های عملکرد و جبران خدمات.'));
 
     if (App.state.finalizedAt) {
       main.appendChild(U.alert('ok', 'دوره نهایی شده است',
@@ -3414,6 +3709,34 @@
     strip.appendChild(U.kpi('باقیمانده بودجه', U.money(t.remainingBudget),
       { kind: Math.abs(t.remainingBudget) < 1 ? 'ok' : 'warn' }));
     main.appendChild(strip);
+
+    /* Delivery first: this is where the period ends and the files go out. */
+    var mail = mailConfig();
+    var deliverBody = el('div', {}, [
+      el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px' }, [
+        btn('دریافت و ارسال بستهٔ نهایی', function () { sendFinalPackage(); }, 'primary'),
+        btn('فقط فایل عملکرد', function () {
+          writeWorkbook(buildPerformanceWorkbook(),
+            'Karaneh-Performance-' + periodSlug() + '-' + stamp() + '.xlsx');
+          U.toast('فایل عملکرد تولید شد.', 'ok');
+        }),
+        btn('فقط فایل مبالغ', function () {
+          writeWorkbook(buildCompensationWorkbook(),
+            'Karaneh-Compensation-' + periodSlug() + '-' + stamp() + '.xlsx');
+          U.toast('فایل مبالغ تولید شد.', 'ok');
+        }),
+        btn('گیرندگان', function () { go('settings'); }, 'ghost')
+      ]),
+      el('div', { class: 'small' }, [
+        el('span', { class: 'chip ' + (parseAddresses(mail.performance).length ? 'ok' : 'err'),
+          text: 'تیم عملکرد: ' + (parseAddresses(mail.performance).join('، ') || 'ثبت نشده') }),
+        document.createTextNode('  '),
+        el('span', { class: 'chip ' + (parseAddresses(mail.compensation).length ? 'ok' : 'err'),
+          text: 'تیم جبران خدمات: ' + (parseAddresses(mail.compensation).join('، ') || 'ثبت نشده') })
+      ])
+    ]);
+    main.appendChild(U.card('تحویل نهایی', deliverBody,
+      { hint: 'فایل عملکرد بدون مبلغ · فایل مبالغ در قالب حقوق و دستمزد' }));
 
     var sheets = [
       ['Employee Master', 'اطلاعات پایه پرسنل', App.state.employees.length],
@@ -3436,11 +3759,11 @@
       ]));
     });
     list.appendChild(el('div', { style: 'margin-top:14px;display:flex;gap:8px;flex-wrap:wrap' }, [
-      btn('📊 خروجی کامل Excel', function () { exportWorkbook(); }, 'primary'),
-      btn('📄 خروجی CSV — روش پرداخت کارانه', function () { exportCsv(); }),
-      btn('🖨 چاپ گزارش', function () { window.print(); })
+      btn('خروجی کامل Excel', function () { exportWorkbook(); }, 'primary'),
+      btn('خروجی CSV', function () { exportCsv(); }),
+      btn('چاپ', function () { window.print(); })
     ]));
-    main.appendChild(U.card('محتوای فایل خروجی', list));
+    main.appendChild(U.card('گزارش تحلیلی', list));
 
     main.appendChild(U.card('راهنمای فرآیند',
       el('ol', { style: 'margin:0;padding-inline-start:20px;line-height:2' }, [
@@ -3478,7 +3801,12 @@
         positionTitle: e.positionTitle || '',
         jobLevel: e.jobLevel || ''
       };
-    }).sort(function (a, b) { return U.naturalCompare(a.employeeId, b.employeeId); });
+    }).sort(function (a, b) {
+      /* Highest job level first, then by employee number — the order a
+         division head wants to review in. */
+      var byLevel = U.naturalCompare(b.jobLevel || '', a.jobLevel || '');
+      return byLevel || U.naturalCompare(a.employeeId, b.employeeId);
+    });
   }
 
   function downloadQuestionnaireTemplate(opts) {
@@ -3496,48 +3824,65 @@
       reason: 'دانلود تمپلیت پرسشنامه — امضای ' + Tpl.signature(App.state.config)
     });
     save();
-    U.toast('تمپلیت با ' + roster.length + ' نفر تولید شد.', 'ok');
+    if (!opts.quiet) U.toast('تمپلیت با ' + roster.length + ' نفر تولید شد.', 'ok');
   }
 
-  /** One template per division, so each team lead gets only their own people. */
-  function downloadQuestionnaireTemplatePerDivision() {
-    var divisions = {};
+  var GROUPINGS = {
+    jobLevel: { label: 'سطح شغلی', prefix: 'JL-' },
+    division: { label: 'واحد سازمانی', prefix: '' }
+  };
+
+  /**
+   * One template per group. Job level is the default because a division head
+   * reviews their people band by band — a level-4 conversation is a different
+   * conversation from a level-3 one — so the file arrives already sorted that
+   * way rather than mixed together by unit.
+   */
+  function downloadQuestionnaireTemplateByGroup(field) {
+    field = field || 'jobLevel';
+    var meta = GROUPINGS[field] || GROUPINGS.jobLevel;
+    var groups = {};
     templateRoster().forEach(function (e) {
-      (divisions[e.division || 'بدون واحد'] || (divisions[e.division || 'بدون واحد'] = [])).push(e);
+      var k = e[field] || 'نامشخص';
+      (groups[k] || (groups[k] = [])).push(e);
     });
-    var names = Object.keys(divisions);
+    var names = Object.keys(groups).sort(function (a, b) {
+      return field === 'jobLevel' ? U.naturalCompare(b, a) : a.localeCompare(b, 'fa');
+    });
     if (!names.length) { U.toast('فهرست پرسنلی برای تفکیک وجود ندارد.', 'warn'); return; }
 
-    var body = el('div', {});
-    body.appendChild(el('p', { class: 'small muted', style: 'margin-top:0',
-      text: 'برای هر واحد یک فایل جداگانه تولید می‌شود. واحدهای موردنظر را انتخاب کنید.' }));
     var chosen = {};
-    names.sort(function (a, b) { return a.localeCompare(b, 'fa'); }).forEach(function (d) {
+    var body = el('div', {});
+    names.forEach(function (d) {
       var cb = el('input', { type: 'checkbox' });
       cb.checked = true; chosen[d] = true;
       cb.addEventListener('change', function () { chosen[d] = cb.checked; });
       body.appendChild(el('label', { class: 'checkline' }, [
-        cb, el('span', { text: d + ' — ' + divisions[d].length + ' نفر' })
+        cb, el('span', { text: meta.label + ' ' + d + ' — ' + groups[d].length + ' نفر' })
       ]));
     });
 
     U.modal({
-      title: 'تمپلیت به تفکیک واحد سازمانی', size: 'narrow', content: body,
+      title: 'تمپلیت به تفکیک ' + meta.label, size: 'narrow', content: body,
       buttons: [
         { label: 'تولید فایل‌ها', kind: 'primary', onClick: function () {
-          var made = 0;
-          names.forEach(function (d, i) {
-            if (!chosen[d]) return;
+          var picked = names.filter(function (d) { return chosen[d]; });
+          if (!picked.length) { U.toast('هیچ گروهی انتخاب نشد.', 'warn'); return; }
+          picked.forEach(function (d, i) {
             /* Stagger the saves: browsers drop bursts of simultaneous downloads. */
             setTimeout(function () {
               downloadQuestionnaireTemplate({
-                filter: function (e) { return (e.division || 'بدون واحد') === d; },
-                scopeLabel: d, suffix: safeFileName(d)
+                filter: function (e) { return (e[field] || 'نامشخص') === d; },
+                scopeLabel: meta.label + ' ' + d,
+                suffix: safeFileName(meta.prefix + d),
+                quiet: i < picked.length - 1
               });
-            }, made * 450);
-            made++;
+            }, i * 500);
           });
-          if (!made) U.toast('هیچ واحدی انتخاب نشد.', 'warn');
+          if (picked.length > 1) {
+            U.toast(picked.length + ' فایل در حال تولید است. اگر مرورگر اجازه خواست، ' +
+              'دانلود چندگانه را تأیید کنید.', 'warn', 8000);
+          }
         } },
         { label: 'انصراف' }
       ]
@@ -3924,12 +4269,13 @@
    */
   function exportByManager() {
     var levels = [
+      { key: 'jobLevel', label: 'سطح شغلی' },
       { key: 'directManager', label: 'مدیر مستقیم' },
       { key: 'managerLevel1', label: 'مدیر سطح ۱' },
       { key: 'managerLevel2', label: 'مدیر سطح ۲' },
       { key: 'managerLevel3', label: 'مدیر سطح ۳' }
     ];
-    var chosen = 'directManager';
+    var chosen = 'jobLevel';
     var mode = 'sheets';
 
     var counts = el('div', { class: 'small muted', style: 'margin-top:8px' });
@@ -3968,7 +4314,7 @@
     renderCounts();
 
     U.modal({
-      title: 'خروجی به تفکیک سطوح مدیریتی', size: 'narrow', content: body,
+      title: 'خروجی به تفکیک گروه', size: 'narrow', content: body,
       buttons: [
         { label: 'تولید خروجی', kind: 'primary', onClick: function () {
           var label = levels.filter(function (l) { return l.key === chosen; })[0].label;
@@ -4069,6 +4415,213 @@
     U.toast(roster.length + ' ردیف مطابق فیلتر فعلی تولید شد.', 'ok');
   }
 
+  /* ======================================================================
+   * Delivery — the two files a finalised period produces, and the handover
+   * ----------------------------------------------------------------------
+   * A division head finishes; two different teams need two different things.
+   * The performance team needs the ratings and never the money; C&B needs the
+   * amounts in payroll's own layout. Splitting them here means neither team
+   * has to be sent data it should not hold.
+   *
+   * The page runs from the browser with no server, so it cannot put a file
+   * into an email itself. What it does instead: build both files, hand them
+   * over, and open an addressed draft naming exactly what to attach.
+   * ---------------------------------------------------------------------- */
+
+  function mailConfig() {
+    var m = App.state.mail || (App.state.mail = {});
+    if (m.performance === undefined) m.performance = '';
+    if (m.compensation === undefined) m.compensation = '';
+    if (m.cc === undefined) m.cc = '';
+    return m;
+  }
+
+  /** Split and tidy a comma or semicolon separated address list. */
+  function parseAddresses(text) {
+    return String(text || '').split(/[,;،\s]+/)
+      .map(function (a) { return a.trim(); })
+      .filter(function (a) { return a; });
+  }
+
+  var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+  function invalidAddresses(text) {
+    return parseAddresses(text).filter(function (a) { return !EMAIL_RE.test(a); });
+  }
+
+  /**
+   * The performance package: ratings, scores and the behavioural anchor each
+   * answer corresponds to. Deliberately carries no rial figure.
+   */
+  function buildPerformanceWorkbook() {
+    var cfg = App.state.config;
+    var questions = cfg.questions.filter(function (q) { return !q.impact; });
+    var options = Object.keys(cfg.answerScale);
+
+    var header = ['شماره پرسنلی', 'نام و نام خانوادگی', 'واحد سازمانی', 'عنوان شغلی', 'سطح شغلی'];
+    questions.forEach(function (q) {
+      header.push((q.domain || q.id.toUpperCase()) + ' — پاسخ');
+      header.push((q.domain || q.id.toUpperCase()) + ' — سطح');
+    });
+    header.push('امتیاز عملکرد', 'عدد کارانه', 'اثرگذاری ویژه', 'امتیاز ویژه',
+                'ضریب نهایی کارانه', 'وضعیت', 'توضیح معاون بخش');
+
+    var aoa = [header];
+    App.result.rows.forEach(function (r) {
+      if (!r.inScope || !inScopeForRole(r)) return;
+      var row = [r.employeeId, r.fullName, r.division, r.positionTitle, r.jobLevel];
+      questions.forEach(function (q) {
+        var answer = r[q.id];
+        var idx = options.indexOf(String(answer).trim());
+        var anchor = (q.anchors || [])[idx];
+        row.push(answer === null || answer === undefined ? '' : answer);
+        row.push(anchor ? anchor.label : '');
+      });
+      row.push(r.performanceScore === null ? '' : r.performanceScore,
+               r.performanceKaraneh === null ? '' : r.performanceKaraneh,
+               r.specialProject ? 'بله' : 'خیر',
+               r.specialImpactValue || '',
+               r.finalCoefficient === null ? '' : r.finalCoefficient,
+               statusLabel(r.status),
+               r.hodComment || '');
+      aoa.push(row);
+    });
+
+    var ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 13 }, { wch: 22 }, { wch: 16 }, { wch: 24 }, { wch: 8 }]
+      .concat(questions.reduce(function (a) { return a.concat([{ wch: 14 }, { wch: 16 }]); }, []))
+      .concat([{ wch: 12 }, { wch: 12 }, { wch: 13 }, { wch: 11 }, { wch: 14 }, { wch: 14 }, { wch: 32 }]);
+    var scoreStart = 5 + questions.length * 2;
+    ws['!postprocess'] = {
+      xSplit: 2, ySplit: 1, headerRow: 1,
+      numberFormats: (function () {
+        var f = {};
+        [scoreStart, scoreStart + 1, scoreStart + 3, scoreStart + 4].forEach(function (c) {
+          f[colLetter(c)] = '0.00';
+        });
+        return f;
+      }())
+    };
+
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Performance');
+    XLSX.utils.book_append_sheet(wb, Tpl.buildBarsSheet(cfg, XLSX), 'BARS');
+    wb.SheetNames.forEach(function (n) { wb.Sheets[n]['!rtl'] = true; });
+    wb.Workbook = { Views: [{ RTL: true }] };
+    return wb;
+  }
+
+  /** The compensation package: payroll's own layout with the amounts filled. */
+  function buildCompensationWorkbook() {
+    var rows = payrollRoster();
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, payrollSheet(rows).ws, 'Karaneh');
+    wb.Workbook = { Views: [{ RTL: false }] };
+    return wb;
+  }
+
+  function periodSlug() { return safeFileName(App.state.period); }
+
+  /**
+   * Produce both files and open the two drafts. Returns what was produced so
+   * the caller can report it rather than guessing.
+   */
+  function sendFinalPackage(opts) {
+    opts = opts || {};
+    var m = mailConfig();
+    var stampNow = stamp();
+    var perfName = 'Karaneh-Performance-' + periodSlug() + '-' + stampNow + '.xlsx';
+    var compName = 'Karaneh-Compensation-' + periodSlug() + '-' + stampNow + '.xlsx';
+
+    writeWorkbook(buildPerformanceWorkbook(), perfName);
+    setTimeout(function () { writeWorkbook(buildCompensationWorkbook(), compName); }, 500);
+
+    var scope = isAdmin() ? 'کل سازمان' : (roleScope() ? roleScope().join('، ') : 'کل سازمان');
+    var count = App.result.rows.filter(function (r) { return r.inScope && inScopeForRole(r); }).length;
+
+    var drafts = [
+      {
+        to: m.performance, file: perfName, team: 'تیم عملکرد',
+        subject: 'کارانه ' + App.state.period + ' — نتایج ارزیابی عملکرد (' + scope + ')',
+        body: 'با سلام،\n\nنتایج ارزیابی عملکرد دورهٔ ' + App.state.period +
+              ' برای ' + count + ' نفر (' + scope + ') نهایی شد.\n\n' +
+              'فایل پیوست: ' + perfName + '\n\nبا احترام'
+      },
+      {
+        to: m.compensation, file: compName, team: 'تیم جبران خدمات',
+        subject: 'کارانه ' + App.state.period + ' — مبالغ نهایی (' + scope + ')',
+        body: 'با سلام،\n\nمبالغ نهایی کارانهٔ دورهٔ ' + App.state.period +
+              ' برای ' + count + ' نفر (' + scope + ') نهایی شد.\n' +
+              'مجموع پرداخت: ' + U.money(App.result.totals.sumFinalKaraneh) + ' ریال\n\n' +
+              'فایل پیوست: ' + compName + '\n\nبا احترام'
+      }
+    ];
+
+    Store.audit(App.state, {
+      entity: 'delivery', field: 'send', oldValue: '',
+      newValue: perfName + ' → ' + (m.performance || '—') + ' | ' +
+                compName + ' → ' + (m.compensation || '—'),
+      reason: 'آماده‌سازی ارسال بستهٔ نهایی دوره ' + App.state.period
+    });
+    save();
+
+    if (opts.silent) return drafts;
+    showDeliveryPanel(drafts, m);
+    return drafts;
+  }
+
+  function mailtoUrl(draft, cc) {
+    var parts = [];
+    parts.push('subject=' + encodeURIComponent(draft.subject));
+    parts.push('body=' + encodeURIComponent(draft.body));
+    if (cc) parts.push('cc=' + encodeURIComponent(parseAddresses(cc).join(',')));
+    return 'mailto:' + encodeURIComponent(parseAddresses(draft.to).join(',')).replace(/%40/g, '@') +
+           '?' + parts.join('&');
+  }
+
+  function showDeliveryPanel(drafts, m) {
+    var body = el('div', {});
+    body.appendChild(el('p', { class: 'small muted', style: 'margin-top:0' },
+      [document.createTextNode(
+        'هر دو فایل تولید و در سینی دانلود قرار گرفتند. با کلیک روی «بازکردن ایمیل»، ' +
+        'پیش‌نویس با گیرنده و موضوع آماده می‌شود؛ فایل را از سینی دانلود پیوست کنید.')]));
+
+    drafts.forEach(function (d) {
+      var missing = !parseAddresses(d.to).length;
+      body.appendChild(el('div', {
+        style: 'border:1px solid var(--border);border-radius:9px;padding:11px 13px;margin-bottom:10px'
+      }, [
+        el('div', { style: 'display:flex;align-items:center;gap:9px;flex-wrap:wrap' }, [
+          el('b', { text: d.team }),
+          missing
+            ? el('span', { class: 'chip err', text: 'نشانی ثبت نشده' })
+            : el('span', { class: 'chip ok mono', text: parseAddresses(d.to).join('، ') })
+        ]),
+        el('div', { class: 'small muted mono', style: 'margin-top:5px', text: d.file }),
+        el('div', { style: 'margin-top:9px;display:flex;gap:7px' }, [
+          el('a', {
+            class: 'btn sm primary' + (missing ? ' disabled' : ''),
+            href: missing ? '#' : mailtoUrl(d, m.cc),
+            text: 'بازکردن ایمیل',
+            onclick: function (e) {
+              if (missing) { e.preventDefault(); go('settings'); }
+            }
+          }),
+          missing ? btn('ثبت نشانی', function () { go('settings'); }, 'sm') : null
+        ].filter(Boolean))
+      ]));
+    });
+
+    U.modal({
+      title: 'ارسال بستهٔ نهایی', content: body,
+      buttons: [
+        { label: 'نمایش فایل‌ها', onClick: function () { showDownloadTray(); } },
+        'spacer',
+        { label: 'بستن', kind: 'primary' }
+      ]
+    });
+  }
+
   function exportWorkbook() {
     try {
       var name = 'Karaneh-' + App.state.period.replace(/[\s\/\\]+/g, '-') + '-' + stamp() + '.xlsx';
@@ -4142,18 +4695,81 @@
     setTimeout(function () { if (input.parentNode) input.parentNode.removeChild(input); }, 1000);
   }
 
-  /** Accepts a string or a Uint8Array; Blob handles both. */
+  /**
+   * Hand a file to the user.
+   *
+   * A programmatic click is the normal path, but it is not reliable
+   * everywhere: some browsers refuse synthetic downloads from a file:// page,
+   * and every browser blocks the second and later files of a batch until the
+   * user grants permission. Silently failing there looks exactly like a broken
+   * button, so the last file handed out is also kept as a real link the user
+   * can click, and the panel that shows it stays until dismissed.
+   *
+   * Accepts a string or a Uint8Array; Blob handles both.
+   */
   function download(content, filename, type) {
     var blob = new Blob([content], { type: type });
     var url = URL.createObjectURL(blob);
+
     var a = el('a', { href: url, download: filename });
+    a.style.display = 'none';
     document.body.appendChild(a);
-    a.click();
-    setTimeout(function () {
-      if (a.parentNode) a.parentNode.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, 500);
+    try { a.click(); } catch (e) { /* fall through to the manual link */ }
+    setTimeout(function () { if (a.parentNode) a.parentNode.removeChild(a); }, 1000);
+
+    rememberDownload(filename, url, type);
   }
+
+  /* The files produced in this session, newest first, each still clickable. */
+  App.downloads = [];
+
+  function rememberDownload(filename, url, type) {
+    App.downloads.unshift({ filename: filename, url: url, type: type, at: new Date() });
+    /* Object URLs hold the blob in memory; keep a bounded number alive. */
+    while (App.downloads.length > 12) {
+      var old = App.downloads.pop();
+      try { URL.revokeObjectURL(old.url); } catch (e) { /* already gone */ }
+    }
+    showDownloadTray();
+  }
+
+  /**
+   * A persistent tray listing what this session produced. It is the answer to
+   * "the download button does nothing": whatever the browser did, the file is
+   * here and one click away.
+   */
+  function showDownloadTray() {
+    var host = document.getElementById('dlTray');
+    if (!host) {
+      host = el('div', { id: 'dlTray', class: 'dl-tray' });
+      document.body.appendChild(host);
+    }
+    U.clear(host);
+
+    host.appendChild(el('div', { class: 'dl-head' }, [
+      el('b', { text: 'فایل‌های آمادهٔ دریافت' }),
+      el('span', { class: 'muted small', text: ' (' + App.downloads.length + ')' }),
+      el('div', { style: 'flex:1' }),
+      el('button', {
+        class: 'btn sm ghost', text: '✕',
+        title: 'بستن',
+        onclick: function () { if (host.parentNode) host.parentNode.removeChild(host); }
+      })
+    ]));
+
+    App.downloads.forEach(function (d) {
+      host.appendChild(el('a', {
+        class: 'dl-item', href: d.url, download: d.filename, title: d.filename
+      }, [
+        el('span', { class: 'ico', text: '⬇' }),
+        el('span', { class: 'name', text: d.filename })
+      ]));
+    });
+
+    host.appendChild(el('div', { class: 'dl-note',
+      text: 'اگر دانلود خودکار شروع نشد، روی نام فایل کلیک کنید.' }));
+  }
+  App.showDownloadTray = showDownloadTray;
 
   function stamp() {
     var d = new Date();

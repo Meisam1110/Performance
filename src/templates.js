@@ -65,6 +65,16 @@
    * Template signature
    * ---------------------------------------------------------------------- */
 
+  /** The question that drives the special-impact amount, if one is flagged. */
+  function impactQuestion(config) {
+    return (config.questions || []).filter(function (q) { return q.impact; })[0] || null;
+  }
+
+  /** Questions that appear as answer columns on the template. */
+  function answerQuestions(config) {
+    return (config.questions || []).filter(function (q) { return !q.impact; });
+  }
+
   /** Stable, order-sensitive fingerprint of the questionnaire design. */
   function describe(config) {
     var questions = (config.questions || []).map(function (q) {
@@ -202,12 +212,13 @@
     var questions = config.questions || [];
     var options = Object.keys(config.answerScale || {});
 
+    var impact = impactQuestion(config);
     var columns = IDENTITY.slice();
-    questions.forEach(function (q, i) {
+    answerQuestions(config).forEach(function (q) {
       columns.push({
         key: q.id,
         label: q.id.toUpperCase(),
-        description: q.text,
+        description: (q.domain ? q.domain + ' — ' : '') + q.text,
         width: 17,
         answer: true,
         scored: q.scored !== false,
@@ -216,7 +227,12 @@
     });
     columns.push({
       key: 'specialProject', label: 'اثرگذاری ویژه',
-      description: config.specialImpactQuestion || '', width: 16, choice: true
+      description: (impact && impact.domain ? impact.domain + ' — ' : '') +
+                   (impact ? impact.text : (config.specialImpactQuestion || '')),
+      width: 16, choice: true
+    });
+    columns.push({
+      key: 'specialImpactAmount', label: 'امتیاز اثرگذاری ویژه', width: 20, amount: true
     });
     columns.push({
       key: 'specialImpactComment', label: 'توضیح اثرگذاری ویژه', width: 34
@@ -225,10 +241,7 @@
     var aoa = [];
     aoa.push(['پرسشنامه کارانه تیمی — ' + (opts.period || '')]);
     aoa.push([opts.scopeLabel ? 'دامنه: ' + opts.scopeLabel : '']);
-    aoa.push(['راهنما: فقط ستون‌های پاسخ را تکمیل کنید. پاسخ‌ها را از فهرست کشویی هر خانه انتخاب کنید. ' +
-              'ستون‌های هویتی را تغییر ندهید.']);
-    aoa.push(['سؤال اثرگذاری ویژه تنها زمانی امتیاز می‌گیرد که امتیاز کارانهٔ حاصل از سایر سؤالات ' +
-              'حداقل ' + (config.specialImpactMinScore || 0) + ' باشد.']);
+    aoa.push(['پاسخ‌ها را از فهرست کشویی هر خانه انتخاب کنید. شرح رفتاری هر سطح در شیت BARS آمده است.']);
     aoa.push([]);
     /* Descriptive band: the full question text sits above the short code. */
     aoa.push(columns.map(function (c) { return c.description || ''; }));
@@ -247,7 +260,7 @@
     var ws = XLSX.utils.aoa_to_sheet(aoa);
     ws['!cols'] = columns.map(function (c) { return { wch: c.width }; });
 
-    var headerRow = 7;                       // 1-based row holding the codes
+    var headerRow = 6;                       // 1-based row holding the codes
     var firstData = headerRow + 1;
     var lastData = headerRow + employees.length + 20;
 
@@ -255,6 +268,15 @@
     columns.forEach(function (c, i) {
       if (c.answer) validations.push({ col: i, options: options });
       if (c.choice) validations.push({ col: i, options: ['بله', 'خیر'] });
+      if (c.amount) {
+        /* The special score moves in fixed steps, so the template offers the
+           permitted values rather than a free number the system would reject. */
+        var step = config.specialImpactStep || 50;
+        var max = config.specialImpactAmount || 300;
+        var choices = [];
+        for (var v = step; v <= max; v += step) choices.push(String(v));
+        validations.push({ col: i, options: choices });
+      }
     });
 
     ws['!postprocess'] = {
@@ -268,19 +290,7 @@
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, QUESTIONNAIRE_SHEET);
 
-    /* Reference sheet so the scale is visible inside the file. */
-    var guide = [['راهنمای امتیازدهی'], [], ['پاسخ', 'امتیاز']];
-    Object.keys(config.answerScale || {}).forEach(function (k) {
-      guide.push([k, config.answerScale[k]]);
-    });
-    guide.push([], ['سؤالات'], ['کد', 'متن سؤال', 'وزن', 'در محاسبه']);
-    questions.forEach(function (q) {
-      guide.push([q.id.toUpperCase(), q.text, q.weight === undefined ? 1 : q.weight,
-                  q.scored === false ? 'خیر' : 'بله']);
-    });
-    var gws = XLSX.utils.aoa_to_sheet(guide);
-    gws['!cols'] = [{ wch: 14 }, { wch: 70 }, { wch: 8 }, { wch: 11 }];
-    XLSX.utils.book_append_sheet(wb, gws, 'راهنما');
+    XLSX.utils.book_append_sheet(wb, buildBarsSheet(config, XLSX), 'BARS');
 
     var mws = XLSX.utils.aoa_to_sheet(metaSheetRows(config, opts.period, 'questionnaire'));
     mws['!cols'] = [{ wch: 24 }, { wch: 60 }];
@@ -289,6 +299,63 @@
     wb.SheetNames.forEach(function (n) { wb.Sheets[n]['!rtl'] = true; });
     wb.Workbook = { Views: [{ RTL: true }], Sheets: [{}, {}, { Hidden: 1 }] };
     return wb;
+  }
+
+  /**
+   * The rating scale, on one sheet.
+   *
+   * One row per question, one column per level, each cell carrying the anchor
+   * label and the behaviour it describes. This is what a rater reads while
+   * filling the questionnaire, so it ships inside the same workbook rather
+   * than as a separate document.
+   */
+  function buildBarsSheet(config, XLSX) {
+    var levels = Object.keys(config.answerScale || {});
+    var aoa = [];
+    aoa.push(['مقیاس رفتاری ارزیابی — BARS']);
+    aoa.push(['برای هر حوزه، رفتاری را انتخاب کنید که بیشترین شباهت را به عملکرد واقعی فرد در این دوره دارد.']);
+    aoa.push([]);
+
+    var header = ['حوزه', 'سؤال'];
+    levels.forEach(function (name, i) {
+      header.push((config.answerScale[name]) + ' — ' + name);
+    });
+    aoa.push(header);
+
+    (config.questions || []).forEach(function (q) {
+      var row = [q.domain || '', q.text || ''];
+      for (var i = 0; i < levels.length; i++) {
+        var a = (q.anchors || [])[i];
+        row.push(a ? ((a.label ? '(' + a.label + ')\n\n' : '') + (a.text || '')) : '');
+      }
+      aoa.push(row);
+    });
+
+    aoa.push([]);
+    aoa.push(['وزن هر سؤال در امتیاز عملکرد']);
+    aoa.push(['کد', 'حوزه', 'وزن', 'در محاسبه']);
+    (config.questions || []).forEach(function (q) {
+      aoa.push([q.id.toUpperCase(), q.domain || '', q.weight === undefined ? 1 : q.weight,
+                q.impact ? 'امتیاز ویژه' : (q.scored === false ? 'خیر' : 'بله')]);
+    });
+    aoa.push([]);
+    aoa.push(['سؤال اثرگذاری ویژه تنها زمانی امتیاز می‌گیرد که امتیاز کارانهٔ حاصل از سایر سؤالات ' +
+              'حداقل ' + (config.specialImpactMinScore || 0) + ' باشد.']);
+    aoa.push(['امتیاز اثرگذاری ویژه باید مضربی از ' + (config.specialImpactStep || 50) + ' باشد.']);
+
+    var ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 24 }, { wch: 60 }].concat(levels.map(function () { return { wch: 40 }; }));
+    /* Anchor cells hold a paragraph each; without wrapping and tall rows the
+       sheet is unreadable. Rows are sized for the longest anchor. */
+    ws['!rows'] = aoa.map(function (row, i) {
+      return (i >= 4 && i < 4 + (config.questions || []).length) ? { hpt: 108 } : null;
+    });
+    ws['!postprocess'] = {
+      xSplit: 2, ySplit: 4, headerRow: 4, numberFormats: {},
+      wrapRows: { from: 5, to: 4 + (config.questions || []).length,
+                  fromCol: 0, toCol: 1 + levels.length }
+    };
+    return ws;
   }
 
   /* ------------------------------------------------------------------------
@@ -332,6 +399,7 @@
     readMeta: readMeta,
     verifyAgainstTemplate: verifyAgainstTemplate,
     verifyColumns: verifyColumns,
+    buildBarsSheet: buildBarsSheet,
     buildQuestionnaireTemplate: buildQuestionnaireTemplate,
     buildEmployeeTemplate: buildEmployeeTemplate
   };

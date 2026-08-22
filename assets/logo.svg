@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 132 62" width="88" height="41" role="img" aria-label="ایرانسل MTN">
+  <rect x="1" y="1" width="130" height="60" rx="13" fill="#14161a"/>
+  <text x="66" y="27" text-anchor="middle" fill="#ffffff"
+        font-family="'MTN Irancell', Tahoma, sans-serif" font-weight="700" font-size="25"
+        direction="rtl">ایرانسل</text>
+  <text x="66" y="50" text-anchor="middle" fill="#ffffff"
+        font-family="'MTN Irancell', Arial, sans-serif" font-weight="700" font-size="17"
+        letter-spacing="1.5">MTN</text>
+</svg>

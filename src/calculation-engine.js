@@ -50,20 +50,79 @@
     maxPerformanceScore: 120,
     questionCount: 4,
 
-    /* The questionnaire itself. Text, weight and whether an answer is scored
-       are all editable in the designer, so the instrument can change without
-       touching this file. Merit scores Q1..Q4 with equal weight; Q5 is
-       collected but deliberately excluded from the score. */
+    /* The questionnaire itself — a behaviourally anchored rating scale (BARS).
+       Each question carries its domain and five behavioural anchors, so a
+       rater picks an observed behaviour rather than a bare number. Text,
+       domain, anchors, weight and whether an answer is scored are all editable
+       in the designer, so the instrument can change without touching this file.
+       Q1..Q4 are scored with equal weight; the impact question is not scored —
+       it drives the special-impact amount instead. */
     questions: [
-      { id: 'q1', text: 'تا چه حد فرد وظایف محوله را با بهره‌گیری بهینه از زمان، منابع و انرژی انجام می‌دهد؟', weight: 1, scored: true },
-      { id: 'q2', text: 'آیا فرد در موقعیت‌های واقعی کاری، رفتارهای همسو با ارزش‌های سازمانی نشان می‌دهد؟', weight: 1, scored: true },
-      { id: 'q3', text: 'تا چه حد فرد با ذی‌نفعان داخل و خارج تیم همکاری مؤثر دارد؟', weight: 1, scored: true },
-      { id: 'q4', text: 'تا چه حد فرد مالکیت خروجی‌های خود را می‌پذیرد و آن‌ها را به سطح قابل قبول یا فراتر از انتظار می‌رساند؟', weight: 1, scored: true },
-      { id: 'q5', text: 'نسبت به بازخوردها واکنش سازنده نشان داده و در مسیر رشد یا آمادگی برای مسئولیت‌های بالاتر حرکت کرده است', weight: 0, scored: false }
+      {
+        id: "q1", domain: "عملکرد / کارایی",
+        text: "تا چه حد فرد وظایف محوله را با بهره‌گیری بهینه از زمان، منابع و انرژی انجام می‌دهد؟",
+        weight: 1, scored: true,
+        anchors: [
+          { label: "بی‌تفاوت", text: "به طور مداوم تأخیر دارد، نیازمند پیگیری مداوم است و دوباره‌کاری زیادی ایجاد می‌کند" },
+          { label: "بی‌انگیزه", text: "برخی کارها را انجام می‌دهد اما با تأخیر، اتلاف منابع یا نیاز به اصلاح قابل توجه" },
+          { label: "قابل اتکا", text: "کارها را طبق انتظار، با مصرف منطقی منابع و سطح قابل قبول پیگیری انجام می‌دهد" },
+          { label: "مسئولیت‌پذیر", text: "معمولاً کارها را سریع‌تر، تمیزتر و با دوباره‌کاری کمتر از انتظار انجام می‌دهد" },
+          { label: "دلسوز", text: "علاوه بر کار خودش، روش انجام کار را بهبود می‌دهد و باعث صرفه‌جویی قابل مشاهده در زمان/منابع تیم می‌شود" }
+        ]
+      },
+      {
+        id: "q2", domain: "رفتار شغلی",
+        text: "آیا فرد در موقعیت‌های واقعی کاری، رفتارهای همسو با ارزش‌های سازمانی نشان می‌دهد؟",
+        weight: 1, scored: true,
+        anchors: [
+          { label: "تقابلی", text: "به‌طور مداوم باعث تنش، بی‌اعتمادی یا کاهش همکاری می‌شود؛ دیگران برای کار با او دچار احتیاط، اجتناب یا فرسودگی می‌شوند" },
+          { label: "تدافعی", text: "گاهی همکاری می‌کند اما در فشار کاری رفتار دفاعی، تحقیرآمیز یا مخرب نشان می‌دهد" },
+          { label: "همراه", text: "همکاری قابل قبول دارد، اختلاف‌نظرها را حرفه‌ای مدیریت می‌کند و مانع کار دیگران نمی‌شود" },
+          { label: "تسهیل‌گر", text: "همکاری و مشارکت را فعالانه بهبود می‌بخشد و به حل تعارض کمک می‌کند" },
+          { label: "الگوساز", text: "به شکل پایدار اعتماد، همکاری و امنیت روانی را در تیم یا بین تیم‌ها تقویت می‌کند و الگوی رفتاری برای دیگران است" }
+        ]
+      },
+      {
+        id: "q3", domain: "تعاملات بین‌بخشی و سازمانی",
+        text: "تا چه حد فرد با ذی‌نفعان داخل و خارج تیم همکاری مؤثر دارد؟",
+        weight: 1, scored: true,
+        anchors: [
+          { label: "ناهماهنگ", text: "اطلاعات موردنیاز را به‌موقع منتقل نمی‌کند و در تعامل با سایر تیم‌ها موجب ایجاد تنش یا اختلال در همکاری می‌شود" },
+          { label: "منفعل", text: "همکاری می‌کند اما بیشتر منفعل است و نیاز به یادآوری یا مداخله مدیر دارد" },
+          { label: "همکار", text: "با ذی‌نفعان لازم هماهنگ می‌شود، اطلاعات مرتبط را منتقل می‌کند و همکاری قابل قبول دارد" },
+          { label: "هماهنگ‌کننده", text: "فعالانه افراد مرتبط را درگیر می‌کند، انتظارات را شفاف می‌کند و از سوءتفاهم جلوگیری می‌کند" },
+          { label: "همسوساز", text: "بین تیم‌ها هم‌راستایی ایجاد می‌کند، موانع همکاری را کاهش می‌دهد و به بهبود کیفیت تصمیم‌گیری‌های مشترک کمک می‌کند" }
+        ]
+      },
+      {
+        id: "q4", domain: "خروجی کار",
+        text: "تا چه حد فرد مالکیت خروجی‌های خود را می‌پذیرد و آن‌ها را از نظر کیفیت، دقت، کامل بودن و انطباق با انتظار نقش، به سطح قابل قبول یا فراتر از انتظار می‌رساند؟",
+        weight: 1, scored: true,
+        anchors: [
+          { label: "سهل‌انگار", text: "خروجی‌ها اغلب ناقص، پرخطا یا غیرقابل استفاده‌اند و تکمیل یا اصلاح آن‌ها نیازمند پیگیری مکرر دیگران است" },
+          { label: "ناپایدار", text: "خروجی‌ها بخشی از انتظار را پوشش می‌دهند، اما کیفیت یا کامل بودن آن‌ها ناپایدار است و معمولاً پس از بازخورد اصلاح می‌شوند" },
+          { label: "قابل اتکا", text: "خروجی‌ها عموماً مطابق انتظار نقش، قابل استفاده و کامل‌اند؛ فرد اصلاحات لازم را انجام داده و کار را تا تحویل قابل قبول پیگیری می‌کند" },
+          { label: "دقیق", text: "خروجی‌ها دقیق، کامل، قابل اتکا و نیازمند اصلاحات محدود هستند؛ فرد فعالانه ریسک‌ها، نقص‌ها یا ابهام‌ها را پیش از تحویل شناسایی و برطرف می‌کند" },
+          { label: "ممتاز", text: "فرد خروجی‌هایی فراتر از انتظارات نقش ارائه می‌دهد؛ خروجی‌های او قابل اتکا، قابل استفاده مجدد و الگوسازند و استاندارد خروجی را برای دیگران ارتقا می‌دهند" }
+        ]
+      },
+      {
+        id: "impact", domain: "اثرگذاری",
+        text: "فرد تا چه حد از طریق کار خود، ارزش‌آفرینی قابل مشاهده و مبتنی بر شواهد برای تیم، بخش یا سازمان ایجاد کرده است؟",
+        weight: 0, scored: false, impact: true,
+        anchors: [
+          { label: "مقطعی", text: "اثر مثبت وجود دارد اما محدود، مقطعی یا وابسته به یک تسک مشخص است" },
+          { label: "تیمی", text: "اثر روی عملکرد، کیفیت، سرعت یا هماهنگی تیم قابل مشاهده و تکرارپذیر است" },
+          { label: "فراتیمی", text: "خروجی یا رفتار فرد روی چند تیم، یک جریان کاری یا بخشی از بخش اثر گذاشته است" },
+          { label: "بخشی", text: "اثر قابل مشاهده روی شاخص‌ها، فرآیندها، کیفیت تصمیم‌گیری یا عملکرد یک بخش داشته است" },
+          { label: "راهبردی", text: "اثر فرد با اولویت‌های استراتژیک سازمان مرتبط است و شواهدی از تغییر، بهبود یا ارزش‌آفرینی در سطح سازمان دارد" }
+        ]
+      }
     ],
 
-    /* Text of the special-impact question shown on the template. */
-    specialImpactQuestion: 'فرد تا چه حد از طریق کار خود، ارزش‌آفرینی قابل مشاهده و مبتنی بر شواهد برای تیم، بخش یا سازمان ایجاد کرده است؟',
+    /* Text of the special-impact question shown on the template. Kept in
+       sync with the question flagged `impact` above. */
+    specialImpactQuestion: "فرد تا چه حد از طریق کار خود، ارزش‌آفرینی قابل مشاهده و مبتنی بر شواهد برای تیم، بخش یا سازمان ایجاد کرده است؟",
 
     /* روش پرداخت کارانه!D4 — minimum evaluation score to receive karaneh.
        thresholdMode 'gt' reproduces Merit exactly: a person scoring exactly
@@ -80,6 +139,10 @@
 
     /* «کارانه اثرگذاری ویژه» — flat bonus coefficient for special impact. */
     specialImpactAmount: 300,
+
+    /* The special score moves in fixed steps rather than single points — a
+       rater picks a band, not a precise number. Amounts are snapped to this. */
+    specialImpactStep: 50,
 
     /* The special-impact question may only be answered once the four scored
        questions have already earned at least this many karaneh points. This is
@@ -212,8 +275,20 @@
     var cfg = mergeConfig(config);
     if (!isSpecialImpact(record)) return 0;
     var override = record.specialImpactAmount;
-    if (!isBlank(override) && num(override) !== 0) return num(override);
-    return num(cfg.specialImpactAmount);
+    if (!isBlank(override) && num(override) !== 0) return snapToStep(num(override), cfg);
+    return snapToStep(num(cfg.specialImpactAmount), cfg);
+  }
+
+  /**
+   * Round a special-impact amount onto the configured step. A value typed or
+   * imported off-step is a rating that was never on the scale, so it is
+   * snapped rather than carried through to a payout.
+   */
+  function snapToStep(value, config) {
+    var cfg = mergeConfig(config);
+    var step = num(cfg.specialImpactStep);
+    if (!step || !isFinite(value)) return value;
+    return Math.round(value / step) * step;
   }
 
   /**
@@ -616,6 +691,7 @@
     calculateKaranehScore: calculateKaranehScore,
     calculateSpecialImpact: calculateSpecialImpact,
     specialImpactEntered: specialImpactEntered,
+    snapToStep: snapToStep,
     calculateRawCoefficient: calculateRawCoefficient,
     getGradeScore: getGradeScore,
     calculateGradeImpact: calculateGradeImpact,

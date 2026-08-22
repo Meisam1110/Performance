@@ -10,12 +10,35 @@ var ROOT = path.join(__dirname, '..');
 
 function read(p) { return fs.readFileSync(path.join(ROOT, p), 'utf8'); }
 
+/**
+ * Inline every local asset the stylesheet points at.
+ *
+ * The page has to work from a file:// double-click with no network, so the
+ * brand faces travel inside it as data URIs. WOFF2 keeps the three Irancell
+ * weights to about 90KB before encoding.
+ */
+function inlineFontUrls(css) {
+  return css.replace(/url\((["']?)\.\.\/assets\/([^"')]+)\1\)/g, function (whole, q, file) {
+    var full = path.join(ROOT, 'assets', file);
+    if (!fs.existsSync(full)) {
+      console.warn('  ! asset missing, left as a URL: ' + file);
+      return whole;
+    }
+    var mime = /\.woff2$/.test(file) ? 'font/woff2'
+             : /\.woff$/.test(file) ? 'font/woff'
+             : /\.svg$/.test(file) ? 'image/svg+xml' : 'application/octet-stream';
+    var b64 = fs.readFileSync(full).toString('base64');
+    console.log('  inlined ' + file + ' (' + (b64.length / 1024).toFixed(0) + ' KB base64)');
+    return 'url("data:' + mime + ';base64,' + b64 + '")';
+  });
+}
+
 /* A </script> inside a string literal would close the wrapping tag; the split
    form is inert to the HTML parser and identical to JavaScript. */
 function safe(js) { return js.replace(/<\/script>/gi, '<\\/script>'); }
 
 var parts = {
-  css:      read('src/styles.css'),
+  css:      inlineFontUrls(read('src/styles.css')),
   sheetjs:  read('vendor/xlsx.full.min.js'),
   sample:   read('sample-data/sample-data.js'),
   engine:   read('src/calculation-engine.js'),
