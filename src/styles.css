@@ -646,5 +646,7 @@ dl.kv dd { margin: 0; font-weight: 700; }
   display: grid; place-items: center; background: var(--brand); color: var(--brand-ink);
   font-weight: 700;
 }
-.dl-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: ltr; }
+.dl-item .label { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: ltr;
+                 font-size: 10.5px; color: var(--text-3); }
 .dl-note { font-size: 10.5px; color: var(--text-3); margin-top: 4px; line-height: 1.6; }

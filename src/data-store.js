@@ -18,8 +18,25 @@
   var DB_NAME = 'karaneh-system';
   var DB_VERSION = 1;
   var STORE = 'state';
-  var KEY = 'current';
-  var LS_KEY = 'karaneh-system:state';
+
+  /* Every copy of this page keeps its own state.
+   *
+   * Opened from file://, the HR file and each division-head file can share one
+   * storage origin, so a single key would let whichever page was opened last
+   * overwrite the others' work. Keying by the package the file carries keeps
+   * them separate: HR writes to 'current', each handover file to its own id. */
+  var namespace = 'current';
+  function key() { return namespace; }
+  function lsKey() { return 'karaneh-system:' + namespace; }
+
+  /**
+   * Point the store at one file's slot. Called once at boot, before any read,
+   * with the id of the embedded package if there is one.
+   */
+  function setNamespace(ns) {
+    namespace = ns ? String(ns).replace(/[^A-Za-z0-9_-]/g, '') || 'current' : 'current';
+    return namespace;
+  }
 
   /* ------------------------------------------------------------------------
    * The complete application state. One document, versioned, so an export is
@@ -63,7 +80,7 @@
     return openDb().then(function (db) {
       return new Promise(function (resolve, reject) {
         var tx = db.transaction(STORE, 'readonly');
-        var req = tx.objectStore(STORE).get(KEY);
+        var req = tx.objectStore(STORE).get(key());
         req.onsuccess = function () { resolve(req.result || null); };
         req.onerror = function () { reject(req.error); };
       });
@@ -74,7 +91,7 @@
     return openDb().then(function (db) {
       return new Promise(function (resolve, reject) {
         var tx = db.transaction(STORE, 'readwrite');
-        tx.objectStore(STORE).put(state, KEY);
+        tx.objectStore(STORE).put(state, key());
         tx.oncomplete = function () { resolve(state); };
         tx.onerror = function () { reject(tx.error); };
       });
@@ -84,14 +101,14 @@
   /* ------------------------------------------------------------ localStorage */
   function lsRead() {
     try {
-      var raw = localStorage.getItem(LS_KEY);
+      var raw = localStorage.getItem(lsKey());
       return Promise.resolve(raw ? JSON.parse(raw) : null);
     } catch (e) { return Promise.resolve(null); }
   }
 
   function lsWrite(state) {
     try {
-      localStorage.setItem(LS_KEY, JSON.stringify(state));
+      localStorage.setItem(lsKey(), JSON.stringify(state));
       return Promise.resolve(state);
     } catch (e) {
       return Promise.reject(new Error(
@@ -125,12 +142,12 @@
 
   function clear() {
     memory = null;
-    try { localStorage.removeItem(LS_KEY); } catch (e) { /* ignore */ }
+    try { localStorage.removeItem(lsKey()); } catch (e) { /* ignore */ }
     if (!idbAvailable) return Promise.resolve();
     return openDb().then(function (db) {
       return new Promise(function (resolve) {
         var tx = db.transaction(STORE, 'readwrite');
-        tx.objectStore(STORE).delete(KEY);
+        tx.objectStore(STORE).delete(key());
         tx.oncomplete = function () { resolve(); };
         tx.onerror = function () { resolve(); };
       });
@@ -300,6 +317,8 @@
 
   return {
     emptyState: emptyState,
+    setNamespace: setNamespace,
+    namespace: function () { return namespace; },
     read: read,
     write: write,
     clear: clear,

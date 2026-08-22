@@ -13,7 +13,7 @@ var os = require('os');
 var { chromium } = require('playwright');
 var expected = require('./merit-expected.json');
 
-var APP = 'file://' + path.join(__dirname, '..', 'karaneh-system.html');
+var APP = 'file://' + path.join(__dirname, '..', 'karaneh-hr.html');
 var failures = [];
 
 function check(label, ok, detail) {
@@ -46,7 +46,7 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   check('navigation is split into two phases', phaseCount === 2, phaseCount + ' phase headers');
   check('navigation sits in a horizontal bar',
     await page.locator('.navbar .navitem').count() > 0);
-  check('all navigation entries render for the admin role', navCount === 11, navCount + ' items');
+  check('all navigation entries render for the admin role', navCount === 12, navCount + ' items');
   var themed = await page.evaluate(function () {
     var before = document.documentElement.getAttribute('data-theme');
     document.getElementById('themeBtn').click();
@@ -180,7 +180,7 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   check('final karaneh matches Excel for all 100 employees',
     maxFinal < 1e-3, 'max Δ ' + maxFinal.toExponential(2) + ' rial');
 
-  var footer = await page.locator('table.grid tfoot').textContent();
+  var footer = await page.locator('table.grid tfoot').last().textContent();
   check('payment table footer totals render', /100,000,000,000/.test(footer.replace(/\s+/g, '')),
     footer.replace(/\s+/g, ' ').trim().slice(0, 90));
 
@@ -778,6 +778,253 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   check('tray entries are real blob links',
     tray.hrefs.every(function (h) { return h === 'blob:'; }), tray.hrefs.join(','));
   check('tray entries carry a download filename', tray.hasDownloadAttr);
+
+  console.log('\n== FILENAMES BROWSERS WILL HONOUR ==');
+  var nameTest = await page.evaluate(function () {
+    /* Chromium discards a download filename containing non-ASCII and saves it
+       as "download" with no extension, so names must transliterate. */
+    var probe = document.createElement('a');
+    return {
+      persian: !!probe,
+      tray: (window.App.downloads || []).map(function (d) { return d.filename; })
+    };
+  });
+  check('no produced filename contains non-ASCII',
+    nameTest.tray.every(function (n) { return /^[\x20-\x7E]+$/.test(n); }),
+    nameTest.tray.slice(0, 2).join(' , '));
+  check('every produced filename keeps its extension',
+    nameTest.tray.every(function (n) { return /\.(xlsx|csv|json|html)$/.test(n); }),
+    nameTest.tray.slice(0, 2).join(' , '));
+
+  console.log('\n== BUDGET AND LEVEL REPORT ON THE PAYMENT SCREEN ==');
+  await page.evaluate(function () { window.App.go('payment'); });
+  await page.waitForSelector('#main table.grid');
+  var payScreen = await page.evaluate(function () {
+    var cards = Array.prototype.map.call(document.querySelectorAll('#main .card > h2'),
+      function (h) { return h.textContent.trim(); });
+    var budgetInput = null;
+    document.querySelectorAll('#main input[type="number"]').forEach(function (i) {
+      if (String(i.value) === String(window.App.state.config.budget)) budgetInput = i;
+    });
+    return { cards: cards, hasBudgetInput: !!budgetInput };
+  });
+  check('the payment screen leads with the per-level report',
+    /سطح شغلی/.test(payScreen.cards[0] || ''), payScreen.cards.slice(0, 3).join(' | '));
+  check('the budget is editable on the payment screen', payScreen.hasBudgetInput);
+
+  var liveBudget = await page.evaluate(function () {
+    var before = window.App.result.totals.sumFinalKaraneh;
+    var input = null;
+    document.querySelectorAll('#main input[type="number"]').forEach(function (i) {
+      if (String(i.value) === String(window.App.state.config.budget)) input = i;
+    });
+    input.value = '60000000000';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    var after = window.App.result.totals.sumFinalKaraneh;
+    /* put it back */
+    var input2 = null;
+    document.querySelectorAll('#main input[type="number"]').forEach(function (i) {
+      if (String(i.value) === '60000000000') input2 = i;
+    });
+    input2.value = '100000000000';
+    input2.dispatchEvent(new Event('change', { bubbles: true }));
+    return { before: before, after: after, restored: window.App.result.totals.sumFinalKaraneh };
+  });
+  check('editing the budget there recalculates immediately',
+    Math.abs(liveBudget.after - 60000000000) < 1e-2,
+    liveBudget.before.toFixed(0) + ' → ' + liveBudget.after.toFixed(0));
+  check('restoring the budget restores the total',
+    Math.abs(liveBudget.restored - 100000000000) < 1e-2, liveBudget.restored.toFixed(0));
+
+  var levelReport = await page.evaluate(function () {
+    var rows = document.querySelectorAll('#main table.grid tbody tr');
+    var first = rows[0] ? Array.prototype.map.call(rows[0].children,
+      function (td) { return td.textContent.trim(); }) : [];
+    return { rows: rows.length, first: first, chart: document.querySelectorAll('#main .chart svg').length };
+  });
+  check('the level report lists a row per job level', levelReport.rows > 3,
+    levelReport.rows + ' rows');
+  check('the level report shows totals and averages per level',
+    levelReport.first.length === 10, levelReport.first.slice(0, 6).join(' | '));
+  check('the level report is drawn as a chart too', levelReport.chart >= 1,
+    levelReport.chart + ' charts');
+
+  console.log('\n== HANDOVER: HR ISSUES A DIVISION-HEAD FILE ==');
+  await page.evaluate(function () {
+    /* Earlier blocks trimmed the roster; restore it so the split is meaningful. */
+    var s = window.SAMPLE_DATA;
+    window.App.state.employees = s.employees.map(function (e) {
+      return {
+        employeeId: e.employeeId, fullName: e.fullName, division: e.division,
+        positionTitle: e.positionTitle, jobLevel: e.jobLevel,
+        employeeStatus: 'Active', workingDays: 93
+      };
+    });
+    var mgr = ['مدیر الف', 'مدیر ب', 'مدیر ج'];
+    window.App.state.employees.forEach(function (e, i) {
+      e.directManager = mgr[i % 3];
+      e.managerLevel1 = 'معاون ' + (i % 2 + 1);
+    });
+    window.App.recalc();
+    window.App.go('employees');
+  });
+  await page.waitForSelector('#main .card');
+  var pkgDl = page.waitForEvent('download', { timeout: 25000 });
+  await page.evaluate(function () {
+    document.querySelectorAll('#main button').forEach(function (b) {
+      if (b.textContent.trim() === 'تولید فایل معاون بخش') b.click();
+    });
+  });
+  await page.waitForSelector('.modal .checkline');
+  var pickedGroup = await page.evaluate(function () {
+    var lines = Array.prototype.slice.call(document.querySelectorAll('.modal .checkline'));
+    var first = lines[0].textContent.trim();
+    lines.forEach(function (l, i) {
+      var cb = l.querySelector('input');
+      if (i > 0 && cb.checked) cb.click();
+    });
+    Array.prototype.slice.call(document.querySelectorAll('.modal footer button'))
+      .filter(function (b) { return b.textContent.trim() === 'تولید فایل‌ها'; })[0].click();
+    return first;
+  });
+  var pkgFile = path.join(downloadDir, (await pkgDl).suggestedFilename());
+  await (await pkgDl).saveAs(pkgFile);
+  check('the handover file is named so the browser keeps it',
+    /^[\x20-\x7E]+\.html$/.test(path.basename(pkgFile)), path.basename(pkgFile));
+  check('the handover file is a complete application',
+    fs.statSync(pkgFile).size > 900 * 1024,
+    (fs.statSync(pkgFile).size / 1024).toFixed(0) + ' KB');
+
+  var pkgHtml = fs.readFileSync(pkgFile, 'utf8');
+  check('the handover file carries its own payload',
+    pkgHtml.indexOf('__KARANEH_PACKAGE__') !== -1);
+  check('the payload is parsed, not evaluated as a literal',
+    /__KARANEH_PACKAGE__ = JSON\.parse\(/.test(pkgHtml));
+
+  console.log('\n== HANDOVER: THE DIVISION HEAD OPENS IT ==');
+  var hodPage = await ctx.newPage();
+  var hodErrors = [];
+  hodPage.on('pageerror', function (e) { hodErrors.push(String(e)); });
+  hodPage.on('console', function (m) {
+    if (m.type() === 'error') hodErrors.push('console: ' + m.text());
+  });
+  await hodPage.goto('file://' + pkgFile);
+  await hodPage.waitForSelector('.brandbar .title', { timeout: 15000 });
+  await hodPage.waitForTimeout(1200);
+
+  var hod = await hodPage.evaluate(function () {
+    return {
+      title: document.title,
+      role: window.App.state.role,
+      label: window.App.state.package.label,
+      scope: window.App.state.hodScope,
+      employees: window.App.state.employees.length,
+      inScope: window.App.result.totals.inScopeCount,
+      nav: Array.prototype.map.call(document.querySelectorAll('.navitem'),
+        function (n) { return n.textContent.replace(/[0-9🔒]/g, '').trim(); })
+    };
+  });
+  check('it opens in the division head role', hod.role === 'hod', hod.role);
+  check('it is titled for that division', hod.title.indexOf(hod.label) !== -1, hod.title);
+  check('it carries only that division\'s people',
+    hod.employees > 0 && hod.employees < 100, hod.employees + ' of 100');
+  check('every carried employee is in scope', hod.inScope === hod.employees,
+    hod.inScope + ' / ' + hod.employees);
+  check('the questionnaire designer is not offered',
+    !hod.nav.some(function (n) { return n.indexOf('طراحی') !== -1; }), hod.nav.join(' , '));
+  check('system settings are not offered',
+    !hod.nav.some(function (n) { return n.indexOf('تنظیمات') !== -1; }));
+  check('the head can still run the whole cycle',
+    ['پرسنل', 'ورود پاسخ‌ها', 'پاسخ‌ها', 'اعتبارسنجی', 'پرداخت کارانه', 'تعیین مبلغ', 'خروجی']
+      .every(function (want) {
+        return hod.nav.some(function (n) { return n.indexOf(want) !== -1; });
+      }), hod.nav.join(' , '));
+  check('a help section travels with the file',
+    hod.nav.some(function (n) { return n.indexOf('راهنما') !== -1; }));
+
+  var hodHelp = await hodPage.evaluate(function () {
+    window.App.go('help');
+    return {
+      steps: document.querySelectorAll('#main .card').length,
+      mentionsPackage: /صادرشده برای/.test(document.querySelector('#main').textContent),
+      barsRows: document.querySelectorAll('#main .bars-scale-table tbody tr').length
+    };
+  });
+  check('the help section names the file it belongs to', hodHelp.mentionsPackage);
+  check('the help section includes the BARS scale', hodHelp.barsRows === 5,
+    hodHelp.barsRows + ' domains');
+
+  /* Carrying HR's whole budget into a ten-person file would read as ten
+     billion each; the file opens on that group's own share instead. */
+  var seeded = await hodPage.evaluate(function () {
+    return { budget: window.App.state.config.budget,
+             sum: window.App.result.totals.sumFinalKaraneh,
+             source: window.App.state.budgetSource || '' };
+  });
+  check('the file opens on this group\'s share of the budget, not the whole one',
+    seeded.budget > 0 && seeded.budget < 100000000000,
+    Number(seeded.budget).toFixed(0));
+  check('that seeded budget reconciles on open',
+    Math.abs(seeded.sum - seeded.budget) < 1, Number(seeded.sum).toFixed(0));
+  check('the budget field says where its opening number came from',
+    /سهم/.test(seeded.source), seeded.source);
+
+  var hodBudget = await hodPage.evaluate(function () {
+    window.App.go('payment');
+    var input = null;
+    document.querySelectorAll('#main input[type="number"]').forEach(function (i) {
+      if (String(i.value) === String(window.App.state.config.budget)) input = i;
+    });
+    if (!input) return { ok: false };
+    input.value = '8000000000';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return { ok: true, sum: window.App.result.totals.sumFinalKaraneh,
+             status: window.App.result.totals.budgetStatus };
+  });
+  check('the head can set their own budget in the file', hodBudget.ok);
+  check('their budget reconciles exactly',
+    Math.abs(hodBudget.sum - 8000000000) < 1e-2, Number(hodBudget.sum).toFixed(0));
+
+  var hodSplit = await hodPage.evaluate(function () {
+    window.App.go('employees');
+    var labels = Array.prototype.map.call(document.querySelectorAll('#main button'),
+      function (b) { return b.textContent.trim(); });
+    return { labels: labels,
+             hasSplit: labels.some(function (l) { return l.indexOf('تفکیک پرسشنامه') !== -1; }) };
+  });
+  check('the personnel screen offers the manager split', hodSplit.hasSplit,
+    hodSplit.labels.slice(0, 5).join(' , '));
+
+  var splitDl = hodPage.waitForEvent('download', { timeout: 20000 });
+  await hodPage.evaluate(function () {
+    document.querySelectorAll('#main button').forEach(function (b) {
+      if (b.textContent.trim() === 'تمپلیت به تفکیک مدیر مستقیم') b.click();
+    });
+  });
+  await hodPage.waitForSelector('.modal .checkline');
+  await hodPage.evaluate(function () {
+    var lines = Array.prototype.slice.call(document.querySelectorAll('.modal .checkline'));
+    lines.forEach(function (l, i) { var cb = l.querySelector('input'); if (i > 0 && cb.checked) cb.click(); });
+    Array.prototype.slice.call(document.querySelectorAll('.modal footer button'))
+      .filter(function (b) { return b.textContent.trim() === 'تولید فایل‌ها'; })[0].click();
+  });
+  var splitFile = path.join(downloadDir, (await splitDl).suggestedFilename());
+  await (await splitDl).saveAs(splitFile);
+  var splitWb = XLSX0.read(fs.readFileSync(splitFile), { type: 'buffer' });
+  check('the split produces a questionnaire per manager',
+    splitWb.SheetNames.indexOf('BARS') !== -1, splitWb.SheetNames.join(' | '));
+  var splitRows = XLSX0.utils.sheet_to_json(
+    splitWb.Sheets['پرسشنامه کارانه تیمی'], { header: 1, defval: null, blankrows: false });
+  var splitData = splitRows.filter(function (r) {
+    return r[0] && r[0] !== 'شماره پرسنلی' && /^\d/.test(String(r[0]));
+  });
+  check('the manager file lists only that manager\'s people',
+    splitData.length > 0 && splitData.length < hod.employees,
+    splitData.length + ' of ' + hod.employees);
+
+  check('the division-head file ran without errors',
+    hodErrors.length === 0, hodErrors.slice(0, 2).join(' | '));
+  await hodPage.close();
 
   console.log('\n== PERSISTENCE ==');
   await page.reload();

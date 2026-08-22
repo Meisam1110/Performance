@@ -35,27 +35,35 @@
   /* The system is two processes, not one long menu: everything that gets the
      answers in, then everything that turns them into money. The split is what
      lets a division head be handed the second half without the first. */
+  /* A division head runs the same cycle HR does, only over their own people:
+     they collect answers from their managers, review the numbers, set their
+     budget and decide. Only the instrument itself and the system settings stay
+     with HR, because those are organisation-wide. */
   var NAV = [
     { phase: 1, label: 'ورود پرسشنامه و پاسخ سؤالات' },
     { id: 'designer',       icon: '🧩', label: 'طراحی پرسشنامه', adminOnly: true },
-    { id: 'employees',      icon: '👤', label: 'پرسنل',          adminOnly: true },
-    { id: 'import',         icon: '📥', label: 'ورود پاسخ‌ها',    adminOnly: true },
-    { id: 'questionnaires', icon: '📝', label: 'پاسخ‌ها',         adminOnly: true },
+    { id: 'employees',      icon: '👤', label: 'پرسنل' },
+    { id: 'import',         icon: '📥', label: 'ورود پاسخ‌ها' },
+    { id: 'questionnaires', icon: '📝', label: 'پاسخ‌ها' },
     { id: 'validation',     icon: '🛡', label: 'اعتبارسنجی' },
     { phase: 2, label: 'محاسبه کارانه و تغییرات معاون بخش' },
     { id: 'dashboard',      icon: '▦',  label: 'داشبورد' },
     { id: 'payment',        icon: '💰', label: 'پرداخت کارانه' },
-    { id: 'hod',            icon: '✍️', label: 'معاون بخش', needsPhase1: true },
+    { id: 'hod',            icon: '✍️', label: 'تعیین مبلغ', needsPhase1: true },
     { id: 'reports',        icon: '📤', label: 'خروجی' },
     { group: 'سیستم' },
+    { id: 'help',           icon: '❓', label: 'راهنما' },
     { id: 'audit',          icon: '🧾', label: 'ردیابی' },
     { id: 'settings',       icon: '⚙️', label: 'تنظیمات', adminOnly: true }
   ];
 
   var ROLES = {
-    admin: { label: 'مدیر سیستم / منابع انسانی', icon: '🛠' },
+    admin: { label: 'منابع انسانی', icon: '🛠' },
     hod:   { label: 'معاون بخش', icon: '✍️' }
   };
+
+  /** True inside a file HR generated for one division head. */
+  function isHodPackage() { return !!(App.state && App.state.package); }
 
   function role() { return (App.state && App.state.role) || 'admin'; }
   function isAdmin() { return role() === 'admin'; }
@@ -104,7 +112,18 @@
    * Boot
    * ====================================================================*/
   function boot() {
+    /* Bind storage to this file before anything reads it, so a handover file
+       never shares a slot with the HR file it came from. */
+    var payload = window.__KARANEH_PACKAGE__;
+    Store.setNamespace(payload ? payload.package.id : 'current');
+
     Store.read().then(function (saved) {
+      /* A file HR generated for a division head carries its data inside it.
+         It is adopted once — after that the head's own edits are what persist,
+         so reopening the file does not throw their work away. */
+      if (payload && (!saved || !saved.package || saved.package.id !== payload.package.id)) {
+        saved = adoptPackage(payload);
+      }
       App.state = saved || freshState();
       if (!App.state.config) App.state.config = defaultConfig();
       if (!App.state.columnMappings) App.state.columnMappings = cloneMappings();
@@ -122,6 +141,39 @@
       renderShell();
       recalc();
     });
+  }
+
+  /**
+   * Turn an embedded package into a working state. Everything the head needs
+   * travels with the file: their people, the instrument, the parameters and
+   * the scope they are allowed to act on.
+   */
+  function adoptPackage(payload) {
+    var st = freshState();
+    st.package = payload.package;
+    st.budgetSource = payload.budgetSource || '';
+    st.period = payload.period || st.period;
+    st.role = 'hod';
+    st.hodScope = payload.scope || [];
+    st.theme = payload.theme || 'light';
+    st.employees = payload.employees || [];
+    st.questionnaires = (payload.questionnaires || []).map(function (q, i) {
+      var c = JSON.parse(JSON.stringify(q));
+      if (!c._key) c._key = 'q' + (i + 1);
+      return c;
+    });
+    st.importBatches = payload.importBatches || [];
+    if (payload.config) {
+      Object.keys(payload.config).forEach(function (k) { st.config[k] = payload.config[k]; });
+    }
+    if (payload.columnMappings) st.columnMappings = payload.columnMappings;
+    if (payload.mail) st.mail = payload.mail;
+    Store.audit(st, {
+      entity: 'package', field: 'open', oldValue: '',
+      newValue: payload.package.label + ' — ' + st.employees.length + ' نفر',
+      reason: 'بازکردن فایل تحویلی منابع انسانی'
+    });
+    return st;
   }
 
   function freshState() {
@@ -1504,12 +1556,35 @@
   VIEWS.employees = function (main) {
     main.appendChild(head('اطلاعات پرسنل',
       'شماره پرسنلی کلید یکتاست. رکورد تکراری بدون تأیید شما وارد نمی‌شود.',
-      [
-        btn('📄 دانلود تمپلیت حقوق و دستمزد', function () { downloadEmployeeTemplate(); }),
+      (isAdmin() ? [
         btn('ورود فایل پرسنل', function () { pickFiles('employee'); }, 'primary'),
+        btn('تولید فایل معاون بخش', function () { openPackageBuilder(); }),
+        btn('تمپلیت حقوق و دستمزد', function () { downloadEmployeeTemplate(); }),
         btn('خروجی', function () { exportSheet('employees'); }),
         App.state.employees.length ? btn('پاک کردن', function () { clearEmployees(); }, 'danger') : null
-      ].filter(Boolean)));
+      ] : [
+        btn('تفکیک پرسشنامه بین مدیران', function () { openManagerSplit(); }, 'primary'),
+        btn('خروجی', function () { exportSheet('employees'); })
+      ]).filter(Boolean)));
+
+    /* Splitting the questionnaire among the managers who report to this head
+       is the first thing they do, so it sits on the roster screen itself. */
+    if (App.state.employees.length) {
+      main.appendChild(U.card(
+        isAdmin() ? 'تحویل به معاونان بخش' : 'تفکیک پرسشنامه بین مدیران',
+        el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' }, [
+          isAdmin()
+            ? btn('تولید فایل معاون بخش', function () { openPackageBuilder(); }, 'primary')
+            : null,
+          btn('تمپلیت به تفکیک مدیر مستقیم', function () { openManagerSplit('directManager'); }),
+          btn('به تفکیک مدیر سطح ۱', function () { openManagerSplit('managerLevel1'); }),
+          btn('به تفکیک سطح شغلی', function () { downloadQuestionnaireTemplateByGroup('jobLevel'); }),
+          btn('همهٔ حالت‌ها', function () { openManagerSplit(); }, 'ghost')
+        ].filter(Boolean)),
+        { hint: isAdmin()
+          ? 'هر معاون یک فایل مستقل با پرسنل خودش دریافت می‌کند'
+          : 'هر مدیر یک فایل پرسشنامه با پرسنل خودش دریافت می‌کند' }));
+    }
 
 
 
@@ -1565,6 +1640,122 @@
     App.grids.employees = grid;
     main.appendChild(grid.node);
   };
+
+  /**
+   * Split the questionnaire template among managers.
+   *
+   * A division head does not fill four hundred questionnaires themselves —
+   * they hand each of their managers the people who report to that manager.
+   * Any of the manager levels works, because org charts differ in depth.
+   */
+  function openManagerSplit(preset) {
+    var fields = [
+      { key: 'directManager', label: 'مدیر مستقیم' },
+      { key: 'managerLevel1', label: 'مدیر سطح ۱' },
+      { key: 'managerLevel2', label: 'مدیر سطح ۲' },
+      { key: 'managerLevel3', label: 'مدیر سطح ۳' },
+      { key: 'jobLevel',      label: 'سطح شغلی' },
+      { key: 'division',      label: 'واحد سازمانی' }
+    ];
+    var field = preset || 'directManager';
+    var chosen = {};
+
+    var listBox = el('div', { style: 'max-height:280px;overflow-y:auto;margin-top:10px' });
+    var summary = el('div', { class: 'small muted', style: 'margin-top:8px' });
+
+    function roster() {
+      return templateRoster(function (e) { return inScopeForRole({ division: e.division }); });
+    }
+
+    function groupsFor(f) {
+      var g = {}, source = App.state.employees.filter(function (e) {
+        return isPayrollEligible(e) && inScopeForRole({ division: e.division });
+      });
+      source.forEach(function (e) {
+        var k = e[f];
+        if (!k) { g['— ثبت نشده'] = (g['— ثبت نشده'] || 0) + 1; return; }
+        g[k] = (g[k] || 0) + 1;
+      });
+      return g;
+    }
+
+    function renderGroups() {
+      var g = groupsFor(field);
+      var names = Object.keys(g).sort(function (a, b) {
+        return field === 'jobLevel' ? U.naturalCompare(b, a) : a.localeCompare(b, 'fa');
+      });
+      chosen = {};
+      U.clear(listBox);
+      if (!names.length) {
+        listBox.appendChild(el('div', { class: 'small muted',
+          text: 'برای این تفکیک، مقداری در اطلاعات پرسنل ثبت نشده است.' }));
+        U.clear(summary);
+        return;
+      }
+      names.forEach(function (n) {
+        chosen[n] = n.indexOf('— ثبت نشده') !== 0;
+        var cb = el('input', { type: 'checkbox' });
+        cb.checked = chosen[n];
+        cb.addEventListener('change', function () { chosen[n] = cb.checked; updateSummary(); });
+        listBox.appendChild(el('label', { class: 'checkline' }, [
+          cb, el('span', { text: n + ' — ' + g[n] + ' نفر' })
+        ]));
+      });
+      updateSummary();
+    }
+
+    function updateSummary() {
+      var g = groupsFor(field);
+      var picked = Object.keys(chosen).filter(function (k) { return chosen[k]; });
+      var people = picked.reduce(function (a, k) { return a + (g[k] || 0); }, 0);
+      U.clear(summary);
+      summary.appendChild(el('b', { text: picked.length + ' فایل پرسشنامه' }));
+      summary.appendChild(document.createTextNode(' • ' + people + ' نفر'));
+    }
+
+    var sel = el('select', { class: 'editable', style: 'width:100%' });
+    fields.forEach(function (f) { sel.appendChild(el('option', { value: f.key, text: f.label })); });
+    sel.value = field;
+    sel.addEventListener('change', function () { field = sel.value; renderGroups(); });
+
+    var body = el('div', {}, [
+      el('label', { class: 'field' }, [el('span', { text: 'تفکیک بر اساس' }), sel]),
+      listBox, summary,
+      el('div', { class: 'small muted', style: 'margin-top:10px' },
+        [document.createTextNode(
+          'هر فایل شامل شیت BARS، فهرست کشویی پاسخ‌ها و فهرست پرسنل همان گروه است.')])
+    ]);
+    renderGroups();
+
+    U.modal({
+      title: 'تفکیک پرسشنامه', size: 'narrow', content: body,
+      buttons: [
+        { label: 'تولید فایل‌ها', kind: 'primary', onClick: function () {
+          var picked = Object.keys(chosen).filter(function (k) { return chosen[k]; });
+          if (!picked.length) { U.toast('هیچ گروهی انتخاب نشد.', 'warn'); return; }
+          var meta = fields.filter(function (f) { return f.key === field; })[0];
+          picked.forEach(function (name, i) {
+            setTimeout(function () {
+              downloadQuestionnaireTemplate({
+                filter: function (e) {
+                  var v = e[field] || '— ثبت نشده';
+                  return String(v) === name && inScopeForRole({ division: e.division });
+                },
+                scopeLabel: meta.label + ': ' + name,
+                suffix: safeFileNameOr(name, 'group'),
+                quiet: i < picked.length - 1
+              });
+            }, i * 520);
+          });
+          if (picked.length > 1) {
+            U.toast(picked.length + ' فایل در حال تولید است — همه در سینی دانلود می‌مانند.',
+              'warn', 8000);
+          }
+        } },
+        { label: 'انصراف' }
+      ]
+    });
+  }
 
   function clearEmployees() {
     U.confirm('تمام اطلاعات پرسنل حذف شود؟ پرسشنامه‌ها دست‌نخورده می‌مانند.',
@@ -2412,6 +2603,164 @@
     recalc();
   }
 
+  /**
+   * Budget and the parameters that shape it, on the payment screen.
+   *
+   * These used to live in Settings, which a division head cannot open. They
+   * belong next to the numbers they move: the head types a budget and watches
+   * the table underneath change, rather than setting a value elsewhere and
+   * navigating back to see what it did.
+   */
+  function budgetPanel() {
+    var cfg = App.state.config;
+    var box = el('div', {});
+
+    function liveNumber(label, key, step, hint, format) {
+      var inp = el('input', {
+        type: 'number', class: 'editable', step: step || 'any',
+        style: 'width:100%;font-weight:700'
+      });
+      inp.value = cfg[key];
+      /* The hint already sits next to the label; the echo underneath is only
+         for a live readback of the typed number, so it stays empty without a
+         formatter rather than repeating the hint. */
+      var echo = el('div', { class: 'small muted', style: 'margin-top:3px' });
+      function renderEcho() {
+        echo.textContent = format ? format(Number(inp.value)) : '';
+      }
+      renderEcho();
+      inp.addEventListener('input', renderEcho);
+      inp.addEventListener('change', function () {
+        var v = Number(inp.value);
+        if (!isFinite(v) || v < 0) { inp.value = cfg[key]; renderEcho(); return; }
+        if (Number(cfg[key]) === v) return;
+        setConfig(key, v);
+        renderView();
+      });
+      return el('label', { class: 'field' }, [
+        el('span', { html: U.esc(label) + (hint ? ' <span class="muted small">— ' + U.esc(hint) + '</span>' : '') }),
+        inp, echo
+      ]);
+    }
+
+    box.appendChild(el('div', { class: 'form-grid' }, [
+      liveNumber('بودجه کل (ریال)', 'budget', '1000000',
+        App.state.budgetSource || null, function (v) {
+          return isFinite(v) ? U.money(v) + ' ریال' : '';
+        }),
+      liveNumber('حداقل امتیاز جهت دریافت کارانه', 'minPerformanceThreshold', '0.25',
+        'امتیاز کمتر یا مساوی این عدد، کارانهٔ صفر'),
+      liveNumber('حداکثر امتیاز کارانه', 'maxPerformanceScore', '10',
+        'مقیاس تبدیل امتیاز ۱ تا ۵')
+    ]));
+
+    var t = App.result.totals;
+    box.appendChild(el('div', { class: 'budget-bar' }, [
+      el('i', {
+        class: t.budgetOverrun ? 'over' : 'used',
+        style: 'width:' + (t.budget
+          ? Math.min(100, t.allocatedBudget / t.budget * 100).toFixed(2) : 0) + '%'
+      })
+    ]));
+    box.appendChild(el('div', { class: 'budget-legend' }, [
+      el('span', { html: 'تخصیص‌یافته: <b class="num">' + U.money(t.allocatedBudget) + '</b>' }),
+      el('span', { html: 'باقیمانده: <b class="num">' + U.money(t.remainingBudget) + '</b>' }),
+      el('span', {}, [
+        document.createTextNode('وضعیت: '),
+        el('span', {
+          class: 'chip ' + (t.budgetStatus === 'BALANCED' ? 'ok' : 'err'),
+          text: t.budgetStatus === 'BALANCED' ? 'متوازن' : 'نامعتبر'
+        })
+      ])
+    ]));
+    return box;
+  }
+
+  /**
+   * What the budget actually bought, by job level.
+   *
+   * A division head reviews band by band, so this is the summary they need
+   * before touching an individual: how many people at each level, what they
+   * cost in total, and what the average and range look like inside the band.
+   */
+  function levelSummary(rows) {
+    var cfg = App.state.config;
+    var byLevel = {};
+    rows.forEach(function (r) {
+      if (!r.inScope) return;
+      var k = r.jobLevel || 'نامشخص';
+      var g = byLevel[k] || (byLevel[k] = {
+        level: k, grade: r.gradeScore, count: 0, eligible: 0, overridden: 0,
+        score: 0, amount: 0, min: Infinity, max: -Infinity, perf: 0, perfN: 0
+      });
+      g.count++;
+      if (r.eligible) g.eligible++;
+      if (r.isOverridden) g.overridden++;
+      g.score += r.totalScore;
+      g.amount += r.finalKaraneh;
+      if (r.performanceScore !== null) { g.perf += r.performanceScore; g.perfN++; }
+      if (r.eligible) {
+        g.min = Math.min(g.min, r.finalKaraneh);
+        g.max = Math.max(g.max, r.finalKaraneh);
+      }
+    });
+
+    var levels = Object.keys(byLevel).map(function (k) { return byLevel[k]; })
+      .sort(function (a, b) { return (b.grade || 0) - (a.grade || 0) || U.naturalCompare(b.level, a.level); });
+    var total = levels.reduce(function (a, g) { return a + g.amount; }, 0);
+
+    var host = el('div', {});
+    var chartHost = el('div', {});
+    host.appendChild(chartHost);
+
+    var tbl = el('table', { class: 'grid' });
+    tbl.appendChild(el('thead', {}, [el('tr', {}, [
+      el('th', { text: 'سطح شغلی' }), el('th', { text: 'عدد گرید' }),
+      el('th', { text: 'نفرات' }), el('th', { text: 'واجد شرایط' }),
+      el('th', { text: 'میانگین امتیاز' }), el('th', { text: 'مجموع دریافتی (ریال)' }),
+      el('th', { text: 'میانگین هر نفر' }), el('th', { text: 'کمترین' }),
+      el('th', { text: 'بیشترین' }), el('th', { text: 'سهم از بودجه' })
+    ])]));
+    var tb = el('tbody');
+    levels.forEach(function (g) {
+      tb.appendChild(el('tr', {}, [
+        el('td', { class: 'mono', text: g.level }),
+        el('td', { class: 'num', text: g.grade === null ? '—' : U.score(g.grade, 0) }),
+        el('td', { class: 'num', text: U.int(g.count) }),
+        el('td', { class: 'num', text: U.int(g.eligible) }),
+        el('td', { class: 'num', text: g.perfN ? U.score(g.perf / g.perfN) : '—' }),
+        el('td', { class: 'num', text: U.money(g.amount) }),
+        el('td', { class: 'num', text: U.money(g.eligible ? g.amount / g.eligible : 0) }),
+        el('td', { class: 'num', text: g.eligible ? U.money(g.min) : '—' }),
+        el('td', { class: 'num', text: g.eligible ? U.money(g.max) : '—' }),
+        el('td', { class: 'num', text: U.percent(total ? g.amount / total : 0) })
+      ]));
+    });
+    tbl.appendChild(tb);
+    tbl.appendChild(el('tfoot', {}, [el('tr', {}, [
+      el('td', { text: 'جمع' }), el('td', {}),
+      el('td', { class: 'num', text: U.int(levels.reduce(function (a, g) { return a + g.count; }, 0)) }),
+      el('td', { class: 'num', text: U.int(levels.reduce(function (a, g) { return a + g.eligible; }, 0)) }),
+      el('td', {}),
+      el('td', { class: 'num', text: U.money(total) }),
+      el('td', {}), el('td', {}), el('td', {}),
+      el('td', { class: 'num', text: U.percent(total ? 1 : 0) })
+    ])]));
+    host.appendChild(el('div', { class: 'table-wrap', style: 'max-height:none;margin-top:12px' }, [tbl]));
+
+    /* Draw once the node has a width to measure. */
+    requestAnimationFrame(function () {
+      Chart.horizontalBar(chartHost, levels.map(function (g) {
+        return {
+          label: 'JL ' + g.level, value: g.amount,
+          detail: U.money(g.amount) + ' ریال<br>' + g.count + ' نفر · میانگین ' +
+                  U.money(g.eligible ? g.amount / g.eligible : 0)
+        };
+      }), { format: U.moneyShort, labelWidth: 92 });
+    });
+    return host;
+  }
+
   /* ======================================================================
    * VIEW — روش پرداخت کارانه
    * ====================================================================*/
@@ -2432,17 +2781,35 @@
       return;
     }
 
+    var scoped = App.result.rows.filter(inScopeForRole);
+    var scopedPaid = 0, scopedPeople = 0, scopedEligible = 0;
+    scoped.forEach(function (r) {
+      if (!r.inScope) return;
+      scopedPeople++;
+      scopedPaid += r.finalKaraneh;
+      if (r.eligible) scopedEligible++;
+    });
+
     var strip = el('div', { class: 'kpi-grid' });
     strip.appendChild(U.kpi('بودجه (ریال)', U.money(t.budget), { kind: 'brand' }));
-    strip.appendChild(U.kpi('امتیاز کل', U.score(t.sumTotalScore, 2),
-      { kind: 'info', sub: 'مجموع ستون «امتیاز کل»' }));
-    strip.appendChild(U.kpi('ضریب تأثیر گرید', String(App.state.config.gradeImpactFactor),
-      { sub: App.state.config.gradeImpactFactor === 0 ? 'گرید در حال حاضر بی‌اثر است' : '' }));
+    strip.appendChild(U.kpi('مجموع دریافتی', U.money(scopedPaid),
+      { kind: 'ok', sub: scopedPeople + ' نفر' }));
+    strip.appendChild(U.kpi('میانگین هر نفر',
+      U.money(scopedEligible ? scopedPaid / scopedEligible : 0),
+      { sub: scopedEligible + ' نفر واجد شرایط' }));
+    strip.appendChild(U.kpi('امتیاز کل', U.score(t.sumTotalScore, 2), { kind: 'info' }));
     strip.appendChild(U.kpi('سرشکن زیر حد نصاب', U.score(t.ineligibleRedistribution, 4),
       { sub: 'به ازای هر فرد واجد شرایط' }));
     strip.appendChild(U.kpi('سرشکن تغییرات معاون', U.money(t.hodRedistribution),
       { kind: t.hodRedistribution < 0 ? 'warn' : '' }));
     main.appendChild(strip);
+
+    /* The report first, the controls under it, the roster last — read the
+       shape of the outcome, adjust the budget, then go person by person. */
+    main.appendChild(U.card('مجموع دریافتی به تفکیک سطح شغلی', levelSummary(scoped),
+      { hint: 'با هر تغییر بودجه یا امتیاز، بلافاصله به‌روز می‌شود' }));
+    main.appendChild(U.card('بودجه و پارامترها', budgetPanel(),
+      { hint: 'عدد را همین‌جا وارد کنید؛ جدول پایین لحظه‌ای بازمحاسبه می‌شود' }));
 
 
     var grid = U.DataGrid({
@@ -3091,6 +3458,167 @@
         { key: 'reason', label: 'دلیل', width: '220px' }
       ]
     }).node);
+  };
+
+  /* ======================================================================
+   * VIEW — Help
+   * ----------------------------------------------------------------------
+   * Written for the division head, because they are the one who receives a
+   * file and has to work out what to do with it without anyone beside them.
+   * The steps mirror the progress rail exactly, so the two never disagree.
+   * ====================================================================*/
+  VIEWS.help = function (main) {
+    var cfg = App.state.config;
+    var scope = roleScope();
+
+    main.appendChild(head('راهنما',
+      isAdmin()
+        ? 'مرور فرآیند و آنچه در فایل معاون بخش قرار می‌گیرد.'
+        : 'آنچه باید انجام دهید، به ترتیب.'));
+
+    if (isHodPackage()) {
+      main.appendChild(U.alert('info', 'این فایل مخصوص شماست',
+        'صادرشده برای «' + App.state.package.label + '» در تاریخ ' +
+        U.dateTime(App.state.package.issuedAt) + ' — ' +
+        U.int(App.state.employees.length) + ' نفر' +
+        (scope ? ' • واحدهای ' + scope.join('، ') : '') +
+        '. کار شما در همین مرورگر ذخیره می‌شود؛ فایل را جای امنی نگه دارید.'));
+    }
+
+    function stepCard(n, title, lines, action) {
+      return el('div', {
+        style: 'display:flex;gap:12px;padding:13px 15px;border:1px solid var(--border);' +
+               'border-radius:9px;margin-bottom:10px;background:var(--surface)'
+      }, [
+        el('span', {
+          style: 'width:26px;height:26px;border-radius:50%;flex:0 0 26px;display:grid;' +
+                 'place-items:center;background:var(--brand);color:var(--brand-ink);' +
+                 'font-weight:700;font-size:12px'
+        }, [document.createTextNode(String(n))]),
+        el('div', { style: 'flex:1' }, [
+          el('b', { text: title }),
+          el('ul', { style: 'margin:6px 0 0;padding-inline-start:18px;line-height:1.9;font-size:12.5px' },
+            lines.map(function (t) { return el('li', { text: t }); })),
+          action ? el('div', { style: 'margin-top:9px' }, [action]) : null
+        ])
+      ]);
+    }
+
+    var steps = el('div', {});
+
+    steps.appendChild(stepCard(1, 'پرسنل خود را ببینید', [
+      'فهرست افرادی که در این فایل هستند در بخش «پرسنل» آمده است.',
+      'اگر کسی جا افتاده یا اضافه است، به منابع انسانی اطلاع دهید.'
+    ], btn('رفتن به پرسنل', function () { go('employees'); }, 'sm')));
+
+    steps.appendChild(stepCard(2, 'پرسشنامه را بین مدیران خود تقسیم کنید', [
+      'در بخش «پرسنل» گزینهٔ «تفکیک پرسشنامه بین مدیران» را بزنید.',
+      'برای هر مدیر یک فایل Excel جداگانه با پرسنل خودش تولید می‌شود.',
+      'هر فایل شیت BARS را دارد: شرح رفتاری هر سطح، برای اینکه همه یکسان امتیاز بدهند.'
+    ], btn('تفکیک پرسشنامه', function () { openManagerSplit(); }, 'sm primary')));
+
+    steps.appendChild(stepCard(3, 'فایل‌های تکمیل‌شده را برگردانید', [
+      'فایل‌هایی که مدیران پر کرده‌اند را در «ورود پاسخ‌ها» انتخاب کنید — چندتایی هم می‌شود.',
+      'اگر ساختار فایل با تمپلیت یکی نباشد، وارد نمی‌شود و علت دقیق گفته می‌شود.',
+      'می‌توانید پاسخ‌ها را مستقیماً در بخش «پاسخ‌ها» هم ثبت یا اصلاح کنید.'
+    ], btn('ورود پاسخ‌ها', function () { go('import'); }, 'sm')));
+
+    steps.appendChild(stepCard(4, 'خطاها را برطرف کنید', [
+      'بخش «اعتبارسنجی» هر چیزی که مانع محاسبه است را فهرست می‌کند.',
+      'تا وقتی خطای قرمز باز باشد، صفحهٔ «تعیین مبلغ» قفل می‌ماند.',
+      'دلیلش این است که تخصیص نسبی است: محاسبه روی جمعیت ناقص، سهم بقیه را جابه‌جا می‌کند.'
+    ], btn('اعتبارسنجی', function () { go('validation'); }, 'sm')));
+
+    steps.appendChild(stepCard(5, 'بودجه را وارد کنید', [
+      'در «پرداخت کارانه»، بودجهٔ خود را در همان صفحه وارد کنید.',
+      'بالای آن، مجموع دریافتی به تفکیک سطح شغلی را می‌بینید.',
+      'با هر تغییر بودجه، همهٔ اعداد بلافاصله بازمحاسبه می‌شوند.'
+    ], btn('پرداخت کارانه', function () { go('payment'); }, 'sm')));
+
+    steps.appendChild(stepCard(6, 'مبلغ افراد را تعیین کنید', [
+      'در «تعیین مبلغ» می‌توانید مبلغ نهایی هر فرد را دستی وارد کنید.',
+      'ثبت توضیح اجباری است.',
+      'پیش از ثبت می‌بینید این تغییر چقدر از سهم بقیه کم می‌کند و سقف مجاز چقدر است.',
+      'مجموع پرداخت همیشه دقیقاً برابر بودجه می‌ماند.'
+    ], btn('تعیین مبلغ', function () { go('hod'); }, 'sm')));
+
+    steps.appendChild(stepCard(7, 'نهایی و ارسال کنید', [
+      'وقتی وضعیت بودجه «متوازن» بود و خطایی نماند، نهایی‌سازی کنید.',
+      'دو فایل تولید می‌شود: یکی برای تیم عملکرد (بدون مبلغ) و یکی برای جبران خدمات.',
+      'فایل‌ها در سینی دانلود گوشهٔ صفحه هم می‌مانند؛ اگر دانلود خودکار شروع نشد، آنجا کلیک کنید.'
+    ], btn('خروجی', function () { go('reports'); }, 'sm')));
+
+    main.appendChild(U.card('گام‌به‌گام', steps));
+
+    /* The instrument, so the head can answer "what does 3 mean?" */
+    var barsBody = el('div', {});
+    barsBody.appendChild(el('p', { class: 'small muted', style: 'margin-top:0',
+      text: 'برای هر حوزه، رفتاری را انتخاب کنید که بیشترین شباهت را به عملکرد واقعی فرد ' +
+            'در این دوره دارد — نه بهترین یا بدترین روز او.' }));
+    var options = Object.keys(cfg.answerScale);
+    var bt = el('table', { class: 'grid bars-scale-table' });
+    bt.appendChild(el('thead', {}, [el('tr', {},
+      [el('th', { text: 'حوزه' })].concat(options.map(function (o) {
+        return el('th', { text: cfg.answerScale[o] + ' — ' + o });
+      })))]));
+    var btb = el('tbody');
+    cfg.questions.forEach(function (q) {
+      btb.appendChild(el('tr', {},
+        [el('td', {}, [
+          el('b', { text: q.domain || q.id.toUpperCase() }),
+          el('div', { class: 'small muted', style: 'white-space:normal', text: q.text })
+        ])].concat(options.map(function (o, i) {
+          var a = (q.anchors || [])[i];
+          return el('td', { class: 'anchor' }, [
+            a ? el('span', { class: 'anchor-label', text: a.label }) : null,
+            a ? document.createTextNode(a.text) : document.createTextNode('—')
+          ].filter(Boolean));
+        }))));
+    });
+    bt.appendChild(btb);
+    barsBody.appendChild(el('div', { class: 'table-wrap', style: 'max-height:none' }, [bt]));
+    main.appendChild(U.card('مقیاس رفتاری (BARS)', barsBody, { tight: false }));
+
+    /* The handful of rules that decide someone's money. */
+    var rules = [
+      ['امتیاز عملکرد', 'میانگین وزنی ' + Engine.scoredQuestions(cfg).length +
+        ' حوزهٔ امتیازدهی، در بازهٔ ۱ تا ۵.'],
+      ['عدد کارانه', 'امتیاز عملکرد × ' + cfg.maxPerformanceScore + ' ÷ ' + cfg.questionCount + '.'],
+      ['اثرگذاری ویژه', 'تنها از عدد کارانهٔ ' + cfg.specialImpactMinScore +
+        ' به بالا قابل ثبت است و امتیاز آن مضربی از ' + (cfg.specialImpactStep || 50) + ' است.'],
+      ['حد نصاب', 'امتیاز کمتر یا مساوی ' + cfg.minPerformanceThreshold +
+        ' یعنی کارانهٔ صفر؛ سهم آن بین بقیه سرشکن می‌شود.'],
+      ['سطح شغلی', cfg.gradeImpactFactor
+        ? 'با ضریب ' + cfg.gradeImpactFactor + ' در امتیاز کل اثر دارد.'
+        : 'با ضریب صفر، در حال حاضر بر مبلغ اثری ندارد.'],
+      ['تقسیم بودجه', 'بودجه به نسبت «امتیاز کل» هر فرد تقسیم می‌شود.'],
+      ['تغییر دستی', 'هر ریالی که به یک نفر اضافه شود، از سهم بقیه به‌طور مساوی کم می‌شود.']
+    ];
+    var dl = el('dl', { class: 'kv' });
+    rules.forEach(function (r) {
+      dl.appendChild(el('dt', { text: r[0] }));
+      dl.appendChild(el('dd', { style: 'font-weight:400', text: r[1] }));
+    });
+    main.appendChild(U.card('قواعد محاسبه', dl));
+
+    main.appendChild(U.card('سؤالات پرتکرار', el('dl', { class: 'kv' }, [
+      el('dt', { text: 'کارم ذخیره می‌شود؟' }),
+      el('dd', { style: 'font-weight:400',
+        text: 'بله، در همین مرورگر. با بستن صفحه از بین نمی‌رود، اما پاک کردن داده‌های مرورگر آن را حذف می‌کند.' }),
+      el('dt', { text: 'دکمهٔ دانلود کار نمی‌کند' }),
+      el('dd', { style: 'font-weight:400',
+        text: 'فایل ساخته شده است. سینی دانلود گوشهٔ صفحه را ببینید و روی نام فایل کلیک کنید.' }),
+      el('dt', { text: 'چرا نمی‌توانم اثرگذاری ویژه ثبت کنم؟' }),
+      el('dd', { style: 'font-weight:400',
+        text: 'عدد کارانهٔ آن فرد به حد نصاب ' + cfg.specialImpactMinScore + ' نرسیده است.' }),
+      el('dt', { text: 'چرا صفحهٔ تعیین مبلغ باز نمی‌شود؟' }),
+      el('dd', { style: 'font-weight:400',
+        text: 'هنوز خطایی در اعتبارسنجی باز است. آن را برطرف کنید.' }),
+      el('dt', { text: 'مجموع پرداخت از بودجه بیشتر می‌شود؟' }),
+      el('dd', { style: 'font-weight:400',
+        text: 'نه. مجموع همیشه برابر بودجه می‌ماند. اگر مبلغ یک نفر را خیلی بالا ببرید، ' +
+              'دریافتی دیگران منفی می‌شود و سامانه جلوی نهایی‌سازی را می‌گیرد.' })
+    ])));
   };
 
   /* ======================================================================
@@ -3874,7 +4402,7 @@
               downloadQuestionnaireTemplate({
                 filter: function (e) { return (e[field] || 'نامشخص') === d; },
                 scopeLabel: meta.label + ' ' + d,
-                suffix: safeFileName(meta.prefix + d),
+                suffix: safeFileNameOr(meta.prefix + d, 'group'),
                 quiet: i < picked.length - 1
               });
             }, i * 500);
@@ -3903,8 +4431,41 @@
     U.toast('تمپلیت اطلاعات پرسنل تولید شد.', 'ok');
   }
 
+  /* Persian letters, mapped to the closest Latin spelling. Browsers drop a
+     `download` filename that contains non-ASCII — Chromium saves it as
+     "download" with no extension, which looks exactly like a broken button —
+     so every generated name is transliterated before it is used. */
+  var TRANSLIT = {
+    'ا': 'a', 'آ': 'a', 'أ': 'a', 'إ': 'e', 'ب': 'b', 'پ': 'p', 'ت': 't', 'ث': 's',
+    'ج': 'j', 'چ': 'ch', 'ح': 'h', 'خ': 'kh', 'د': 'd', 'ذ': 'z', 'ر': 'r', 'ز': 'z',
+    'ژ': 'zh', 'س': 's', 'ش': 'sh', 'ص': 's', 'ض': 'z', 'ط': 't', 'ظ': 'z', 'ع': 'a',
+    'غ': 'gh', 'ف': 'f', 'ق': 'gh', 'ک': 'k', 'ك': 'k', 'گ': 'g', 'ل': 'l', 'م': 'm',
+    'ن': 'n', 'و': 'v', 'ه': 'h', 'ة': 'h', 'ی': 'y', 'ي': 'y', 'ئ': 'y', 'ؤ': 'v',
+    '\u200c': '-', '\u064b': '', '\u064c': '', '\u064d': '', '\u064e': '',
+    '\u064f': '', '\u0650': '', '\u0651': '', '\u0652': '',
+    '۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4',
+    '۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9',
+    '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4',
+    '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9'
+  };
+
+  /**
+   * An ASCII filename a browser will actually honour.
+   * Returns '' when nothing survives, so callers can fall back to a label of
+   * their own rather than producing a file called "-".
+   */
   function safeFileName(s) {
-    return String(s).replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, '-').slice(0, 40);
+    var out = String(s === null || s === undefined ? '' : s)
+      .split('').map(function (ch) {
+        if (TRANSLIT[ch] !== undefined) return TRANSLIT[ch];
+        return /[A-Za-z0-9]/.test(ch) ? ch : '-';
+      }).join('');
+    return out.replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 48);
+  }
+
+  /** Same, but never empty — used where a name is required. */
+  function safeFileNameOr(s, fallback) {
+    return safeFileName(s) || safeFileName(fallback) || 'file';
   }
 
   /* ======================================================================
@@ -4115,7 +4676,7 @@
    * afterwards by xlsx-postprocess.js. The size penalty is the cost of
    * frozen headers on a sheet that can run to thousands of rows.
    */
-  function writeWorkbook(wb, filename) {
+  function writeWorkbook(wb, filename, label) {
     var spec = {};
     wb.SheetNames.forEach(function (n) {
       if (wb.Sheets[n]['!postprocess']) spec[n] = wb.Sheets[n]['!postprocess'];
@@ -4125,7 +4686,7 @@
       ? window.XlsxPostprocess.applyFormatting(raw, spec)
       : new Uint8Array(raw);
     download(bytes, filename,
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', label);
   }
 
   /* ------------------------------------------------------------------------
@@ -4252,7 +4813,7 @@
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, built.ws, 'Karaneh');
     wb.Workbook = { Views: [{ RTL: false }] };
-    var name = 'Karaneh-Payroll-' + safeFileName(App.state.period) + '-' + stamp() + '.xlsx';
+    var name = 'Karaneh-Payroll-' + periodSlug() + '-' + stamp() + '.xlsx';
     writeWorkbook(wb, name);
     Store.audit(App.state, {
       entity: 'export', field: 'payroll', oldValue: '',
@@ -4344,7 +4905,7 @@
           var wb = XLSX.utils.book_new();
           XLSX.utils.book_append_sheet(wb, payrollSheet(groups[n], filePayouts).ws, 'Karaneh');
           wb.Workbook = { Views: [{ RTL: false }] };
-          writeWorkbook(wb, 'Karaneh-' + safeFileName(n) + '-' + stamp() + '.xlsx');
+          writeWorkbook(wb, 'Karaneh-' + safeFileNameOr(n, 'group') + '-' + stamp() + '.xlsx', n);
         }, i * 450);
       });
     } else {
@@ -4368,7 +4929,7 @@
         XLSX.utils.book_append_sheet(wb, built[n].ws, safeSheetName(n, i, used));
       });
       wb.Workbook = { Views: [{ RTL: true }] };
-      writeWorkbook(wb, 'Karaneh-By-' + safeFileName(label) + '-' + stamp() + '.xlsx');
+      writeWorkbook(wb, 'Karaneh-By-' + safeFileNameOr(label, 'group') + '-' + stamp() + '.xlsx');
     }
 
     Store.audit(App.state, {
@@ -4413,6 +4974,262 @@
     wb.Workbook = { Views: [{ RTL: false }] };
     writeWorkbook(wb, 'Karaneh-Filtered-' + stamp() + '.xlsx');
     U.toast(roster.length + ' ردیف مطابق فیلتر فعلی تولید شد.', 'ok');
+  }
+
+  /* ======================================================================
+   * Handover — building a division head's own copy of the system
+   * ----------------------------------------------------------------------
+   * HR keeps one file. Each division head gets their own: the same
+   * application, carrying only their people, opening in their role, and
+   * remembering their work separately.
+   *
+   * The page is a single self-contained file, so it can produce that copy by
+   * cloning its own document and injecting a payload script ahead of the
+   * application code. No server and no build step involved.
+   * ---------------------------------------------------------------------- */
+
+  var PACKAGE_MARK = 'karaneh-package-payload';
+
+  /** Which employees and answers belong to one handover. */
+  function packageSlice(field, value) {
+    var employees = App.state.employees.filter(function (e) {
+      return String(e[field] || '') === String(value);
+    });
+    var ids = {};
+    employees.forEach(function (e) { ids[e.employeeId] = 1; });
+    var questionnaires = App.state.questionnaires.filter(function (q) {
+      return ids[q.employeeId];
+    });
+    var divisions = {};
+    employees.forEach(function (e) { if (e.division) divisions[e.division] = 1; });
+    return {
+      employees: employees,
+      questionnaires: questionnaires,
+      divisions: Object.keys(divisions)
+    };
+  }
+
+  /**
+   * Clone the running page into a standalone file.
+   *
+   * `document.documentElement.outerHTML` is the whole application, inline
+   * scripts included. The clone is reset to its pre-boot state — the rendered
+   * interface stripped out, any earlier payload removed — before the new
+   * payload is inserted into <head>, ahead of the application script that
+   * reads it.
+   */
+  function buildPackageHtml(payload) {
+    var source = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+    var doc = new DOMParser().parseFromString(source, 'text/html');
+
+    /* Reset anything the running session drew or attached. */
+    var app = doc.getElementById('app');
+    if (app) {
+      app.innerHTML = '<div style="padding:40px;text-align:center;' +
+        'font-family:Tahoma,sans-serif">در حال بارگذاری…</div>';
+    }
+    ['dlTray'].forEach(function (id) {
+      var n = doc.getElementById(id);
+      if (n && n.parentNode) n.parentNode.removeChild(n);
+    });
+    Array.prototype.slice.call(doc.querySelectorAll('.toast-host, .modal-backdrop'))
+      .forEach(function (n) { n.parentNode.removeChild(n); });
+    doc.documentElement.setAttribute('data-theme', payload.theme || 'light');
+
+    /* A file generated from a generated file must not stack payloads. */
+    Array.prototype.slice.call(doc.querySelectorAll('script[data-' + PACKAGE_MARK + ']'))
+      .forEach(function (n) { n.parentNode.removeChild(n); });
+
+    var script = doc.createElement('script');
+    script.setAttribute('data-' + PACKAGE_MARK, '1');
+    /* JSON is embedded rather than assigned as a literal so that any "</script>"
+       inside the data cannot close the tag early. */
+    script.textContent = 'window.__KARANEH_PACKAGE__ = JSON.parse(' +
+      JSON.stringify(JSON.stringify(payload)) + ');';
+    doc.head.appendChild(script);
+
+    var title = doc.querySelector('title');
+    if (title) title.textContent = 'کارانه — ' + payload.package.label;
+
+    return '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
+  }
+
+  /* Exposed for the end-to-end test, which builds a package without going
+     through the modal. */
+  window.__buildPkg = function (label, slice, scope) {
+    return buildPackageHtml(packagePayload(label, slice, scope));
+  };
+
+  /**
+   * The share of HR's own allocation that this group currently holds.
+   *
+   * Handing the head the organisation-wide budget would be misleading — ten
+   * people would appear to be sharing a hundred billion rial. The group's
+   * present allocation is a defensible opening number, and the head is free to
+   * overwrite it on the payment screen.
+   */
+  function sliceBudget(slice) {
+    var ids = {};
+    slice.employees.forEach(function (e) { ids[e.employeeId] = 1; });
+    var sum = 0;
+    App.result.rows.forEach(function (r) {
+      if (ids[r.employeeId] && r.inScope) sum += r.finalKaraneh || 0;
+    });
+    return Math.round(sum);
+  }
+
+  function packagePayload(label, slice, scope) {
+    var config = JSON.parse(JSON.stringify(App.state.config));
+    var share = sliceBudget(slice);
+    if (share > 0) config.budget = share;
+    return {
+      package: {
+        id: 'pkg-' + Date.now() + '-' + Math.random().toString(16).slice(2, 8),
+        label: label,
+        issuedAt: new Date().toISOString(),
+        issuedBy: ROLES[role()].label,
+        period: App.state.period
+      },
+      period: App.state.period,
+      theme: App.state.theme || 'light',
+      scope: scope || slice.divisions,
+      config: config,
+      budgetSource: share > 0 ? 'سهم این گروه از تخصیص منابع انسانی' : '',
+      columnMappings: JSON.parse(JSON.stringify(App.state.columnMappings)),
+      mail: JSON.parse(JSON.stringify(App.state.mail || {})),
+      employees: JSON.parse(JSON.stringify(slice.employees)),
+      questionnaires: JSON.parse(JSON.stringify(slice.questionnaires)),
+      importBatches: []
+    };
+  }
+
+  function emitPackage(label, slice, scope, quiet) {
+    var payload = packagePayload(label, slice, scope);
+    var html = buildPackageHtml(payload);
+    var name = 'Karaneh-' + safeFileNameOr(label, 'group') + '-' + periodSlug() +
+               '-' + stamp() + '.html';
+    download(html, name, 'text/html;charset=utf-8', label);
+    Store.audit(App.state, {
+      entity: 'package', field: 'issue', oldValue: '',
+      newValue: name + ' — ' + slice.employees.length + ' نفر',
+      reason: 'تولید فایل معاون بخش: ' + label
+    });
+    if (!quiet) {
+      U.toast('فایل «' + label + '» با ' + slice.employees.length + ' نفر تولید شد.', 'ok', 5000);
+    }
+    return { name: name, size: html.length, count: slice.employees.length };
+  }
+
+  /**
+   * The HR-side screen for issuing handover files. HR picks how to carve up
+   * the organisation, sees the resulting groups with their headcounts, and
+   * gets one self-contained file per group.
+   */
+  function openPackageBuilder() {
+    if (!App.state.employees.length) {
+      U.toast('ابتدا اطلاعات پرسنل را وارد کنید.', 'warn');
+      return;
+    }
+
+    var fields = [
+      { key: 'division',      label: 'واحد سازمانی' },
+      { key: 'directManager', label: 'مدیر مستقیم' },
+      { key: 'managerLevel1', label: 'مدیر سطح ۱' },
+      { key: 'managerLevel2', label: 'مدیر سطح ۲' },
+      { key: 'managerLevel3', label: 'مدیر سطح ۳' },
+      { key: 'jobLevel',      label: 'سطح شغلی' }
+    ];
+    var field = 'division';
+    var chosen = {};
+
+    var listBox = el('div', { style: 'max-height:300px;overflow-y:auto;margin-top:10px' });
+    var summary = el('div', { class: 'small muted', style: 'margin-top:8px' });
+
+    function groupsFor(f) {
+      var g = {};
+      App.state.employees.forEach(function (e) {
+        if (!isPayrollEligible(e)) return;
+        var k = e[f];
+        if (!k) return;
+        g[k] = (g[k] || 0) + 1;
+      });
+      return g;
+    }
+
+    function renderGroups() {
+      var g = groupsFor(field);
+      var names = Object.keys(g).sort(function (a, b) {
+        return field === 'jobLevel' ? U.naturalCompare(b, a) : a.localeCompare(b, 'fa');
+      });
+      chosen = {};
+      U.clear(listBox);
+      if (!names.length) {
+        listBox.appendChild(el('div', { class: 'small muted',
+          text: 'برای این تفکیک، مقداری در اطلاعات پرسنل ثبت نشده است.' }));
+        U.clear(summary);
+        return;
+      }
+      names.forEach(function (n) {
+        chosen[n] = true;
+        var cb = el('input', { type: 'checkbox' });
+        cb.checked = true;
+        cb.addEventListener('change', function () { chosen[n] = cb.checked; updateSummary(); });
+        listBox.appendChild(el('label', { class: 'checkline' }, [
+          cb, el('span', { text: n + ' — ' + g[n] + ' نفر' })
+        ]));
+      });
+      updateSummary();
+    }
+
+    function updateSummary() {
+      var g = groupsFor(field);
+      var picked = Object.keys(chosen).filter(function (k) { return chosen[k]; });
+      var people = picked.reduce(function (a, k) { return a + (g[k] || 0); }, 0);
+      U.clear(summary);
+      summary.appendChild(el('b', { text: picked.length + ' فایل' }));
+      summary.appendChild(document.createTextNode(' • ' + people + ' نفر در مجموع'));
+    }
+
+    var sel = el('select', { class: 'editable', style: 'width:100%' });
+    fields.forEach(function (f) { sel.appendChild(el('option', { value: f.key, text: f.label })); });
+    sel.addEventListener('change', function () { field = sel.value; renderGroups(); });
+
+    var body = el('div', {}, [
+      el('label', { class: 'field' }, [
+        el('span', { text: 'تفکیک بر اساس' }), sel
+      ]),
+      listBox,
+      summary,
+      el('div', { class: 'small muted', style: 'margin-top:10px' },
+        [document.createTextNode(
+          'هر فایل یک نسخهٔ کامل و مستقل از سامانه است که فقط پرسنل همان گروه را دارد ' +
+          'و در نقش «معاون بخش» باز می‌شود.')])
+    ]);
+    renderGroups();
+
+    U.modal({
+      title: 'تولید فایل معاون بخش', size: 'narrow', content: body,
+      buttons: [
+        { label: 'تولید فایل‌ها', kind: 'primary', onClick: function () {
+          var picked = Object.keys(chosen).filter(function (k) { return chosen[k]; });
+          if (!picked.length) { U.toast('هیچ گروهی انتخاب نشد.', 'warn'); return; }
+          picked.forEach(function (name, i) {
+            /* Stagger the saves: browsers drop bursts of simultaneous downloads. */
+            setTimeout(function () {
+              var slice = packageSlice(field, name);
+              var scope = field === 'division' ? [name] : slice.divisions;
+              emitPackage(name, slice, scope, i < picked.length - 1);
+            }, i * 550);
+          });
+          save();
+          if (picked.length > 1) {
+            U.toast(picked.length + ' فایل در حال تولید است. اگر مرورگر اجازه خواست، ' +
+              'دانلود چندگانه را تأیید کنید — همه در سینی دانلود هم می‌مانند.', 'warn', 9000);
+          }
+        } },
+        { label: 'انصراف' }
+      ]
+    });
   }
 
   /* ======================================================================
@@ -4520,7 +5337,7 @@
     return wb;
   }
 
-  function periodSlug() { return safeFileName(App.state.period); }
+  function periodSlug() { return safeFileNameOr(App.state.period, 'period'); }
 
   /**
    * Produce both files and open the two drafts. Returns what was produced so
@@ -4624,7 +5441,7 @@
 
   function exportWorkbook() {
     try {
-      var name = 'Karaneh-' + App.state.period.replace(/[\s\/\\]+/g, '-') + '-' + stamp() + '.xlsx';
+      var name = 'Karaneh-' + periodSlug() + '-' + stamp() + '.xlsx';
       writeWorkbook(buildWorkbook(), name);
       Store.audit(App.state, {
         entity: 'export', field: 'workbook', oldValue: '', newValue: name,
@@ -4648,7 +5465,7 @@
     XLSX.utils.book_append_sheet(single, wb.Sheets[keep], keep);
     single.Workbook = { Views: [{ RTL: true }] };
     single.Sheets[keep]['!postprocess'] = wb.Sheets[keep]['!postprocess'];
-    writeWorkbook(single, keep.replace(/[\s\/\\]+/g, '-') + '-' + stamp() + '.xlsx');
+    writeWorkbook(single, safeFileNameOr(keep, 'sheet') + '-' + stamp() + '.xlsx', keep);
     U.toast('خروجی تولید شد.', 'ok');
   }
 
@@ -4707,7 +5524,7 @@
    *
    * Accepts a string or a Uint8Array; Blob handles both.
    */
-  function download(content, filename, type) {
+  function download(content, filename, type, label) {
     var blob = new Blob([content], { type: type });
     var url = URL.createObjectURL(blob);
 
@@ -4717,14 +5534,16 @@
     try { a.click(); } catch (e) { /* fall through to the manual link */ }
     setTimeout(function () { if (a.parentNode) a.parentNode.removeChild(a); }, 1000);
 
-    rememberDownload(filename, url, type);
+    rememberDownload(filename, url, type, label);
   }
 
   /* The files produced in this session, newest first, each still clickable. */
   App.downloads = [];
 
-  function rememberDownload(filename, url, type) {
-    App.downloads.unshift({ filename: filename, url: url, type: type, at: new Date() });
+  function rememberDownload(filename, url, type, label) {
+    App.downloads.unshift({
+      filename: filename, url: url, type: type, label: label || '', at: new Date()
+    });
     /* Object URLs hold the blob in memory; keep a bounded number alive. */
     while (App.downloads.length > 12) {
       var old = App.downloads.pop();
@@ -4759,10 +5578,14 @@
 
     App.downloads.forEach(function (d) {
       host.appendChild(el('a', {
-        class: 'dl-item', href: d.url, download: d.filename, title: d.filename
+        class: 'dl-item', href: d.url, download: d.filename,
+        title: (d.label ? d.label + '\n' : '') + d.filename
       }, [
         el('span', { class: 'ico', text: '⬇' }),
-        el('span', { class: 'name', text: d.filename })
+        el('span', {}, [
+          d.label ? el('div', { class: 'label', text: d.label }) : null,
+          el('div', { class: 'name', text: d.filename })
+        ].filter(Boolean))
       ]));
     });
 

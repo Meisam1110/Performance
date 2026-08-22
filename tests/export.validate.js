@@ -13,12 +13,20 @@ var out = process.argv[2] || path.join(__dirname, '..', 'tmp-export.xlsx');
   });
   var ctx = await browser.newContext({ acceptDownloads: true });
   var page = await ctx.newPage();
-  await page.goto('file://' + path.join(__dirname, '..', 'karaneh-system.html'));
-  await page.waitForSelector('.topbar .brand');
+  await page.goto('file://' + path.join(__dirname, '..', 'karaneh-hr.html'));
+  await page.waitForSelector('.brandbar .title');
   await page.evaluate(function () {
     var s = window.SAMPLE_DATA, now = new Date().toISOString(), st = window.App.state;
     Object.keys(s.config).forEach(function (k) {
-      if (st.config[k] !== undefined) st.config[k] = s.config[k];
+      if (st.config[k] === undefined) return;
+      if (k === 'gradeMap') {
+        /* Merge, so a level the sample does not mention (2H) survives. */
+        Object.keys(s.config.gradeMap).forEach(function (jl) {
+          st.config.gradeMap[jl] = s.config.gradeMap[jl];
+        });
+        return;
+      }
+      st.config[k] = s.config[k];
     });
     st.questionnaires = s.employees.map(function (e, i) {
       var c = JSON.parse(JSON.stringify(e));
@@ -35,7 +43,12 @@ var out = process.argv[2] || path.join(__dirname, '..', 'tmp-export.xlsx');
   });
   var dl = page.waitForEvent('download', { timeout: 20000 });
   await page.evaluate(function () { window.App.go('reports'); });
-  await page.locator('#main button.primary').first().click();
+  /* Named, not positional: the delivery buttons sit above this one. */
+  await page.evaluate(function () {
+    document.querySelectorAll('#main button').forEach(function (b) {
+      if (b.textContent.trim() === 'خروجی کامل Excel') b.click();
+    });
+  });
   var d = await dl;
   await d.saveAs(out);
   await browser.close();
