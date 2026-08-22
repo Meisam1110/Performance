@@ -69,6 +69,27 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   var logo = await page.locator('.brandbar .logo svg').count();
   check('the brand mark renders', logo === 1);
 
+  var shell = await page.evaluate(function () {
+    var nav = Array.prototype.map.call(document.querySelectorAll('.navitem'),
+      function (n) { return n.textContent.replace(/[0-9🔒]/g, '').trim(); });
+    var svg = document.querySelector('.brandbar .logo svg');
+    var parts = Array.prototype.map.call(svg.querySelectorAll('rect, text'), function (n) {
+      var r = n.getBoundingClientRect();
+      return { tag: n.tagName, txt: n.textContent, left: Math.round(r.left), width: Math.round(r.width) };
+    });
+    return { first: nav[0], parts: parts, box: Math.round(svg.getBoundingClientRect().width) };
+  });
+  check('the guide is the first tab', /راهنما/.test(shell.first), shell.first);
+  /* The wordmark is anchored inside an RTL text element, where `start` is the
+     right edge; anchored the other way it rendered off the viewBox. */
+  check('the brand mark draws both of its parts inside the box',
+    shell.parts.length === 3 && shell.parts.every(function (p) {
+      return p.width > 8 && p.left >= 0;
+    }), JSON.stringify(shell.parts));
+  check('the wordmark sits beside the badge, not on top of it',
+    shell.parts[2].left >= shell.parts[0].left + shell.parts[0].width,
+    shell.parts[0].left + '+' + shell.parts[0].width + ' vs ' + shell.parts[2].left);
+
   console.log('\n== LOAD SAMPLE DATA ==');
   /* The workbook data goes in exactly as it stands — no fix-ups. The
      special-impact gate is what makes it reproduce Excel. */
@@ -849,6 +870,39 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   check('the level report is drawn as a chart too', levelReport.chart >= 1,
     levelReport.chart + ' charts');
 
+  console.log('\n== ROSTER GUIDANCE AND BRAND MARK ==');
+  var roster = await page.evaluate(function () {
+    window.App.go('employees');
+    var txt = document.querySelector('#main').textContent;
+    return {
+      saysPayroll: /از تیم حقوق و دستمزد گرفته‌اید/.test(txt),
+      noTray: !/سینی/.test(txt)
+    };
+  });
+  check('the personnel screen says to load the payroll file here', roster.saysPayroll);
+
+  var wording = await page.evaluate(function () {
+    window.App.go('help');
+    return { noTray: !/سینی/.test(document.querySelector('#main').textContent),
+             steps: document.querySelectorAll('#main .card').length };
+  });
+  check('the guide no longer calls it a tray', wording.noTray);
+
+  var logoCard = await page.evaluate(function () {
+    window.App.go('settings');
+    var cards = Array.prototype.slice.call(document.querySelectorAll('#main .card'));
+    var card = cards.filter(function (c) { return /نشان سازمان/.test(c.textContent); })[0];
+    if (!card) return { ok: false };
+    return {
+      ok: true,
+      accepts: (card.querySelector('input[type="file"]') || {}).accept || '',
+      hasPreview: !!card.querySelector('svg, img')
+    };
+  });
+  check('settings offers to replace the brand mark with the official file',
+    logoCard.ok && /svg/.test(logoCard.accepts), JSON.stringify(logoCard));
+  check('the brand-mark card previews what will be shown', logoCard.hasPreview);
+
   console.log('\n== HANDOVER: HR ISSUES A DIVISION-HEAD FILE ==');
   await page.evaluate(function () {
     /* Earlier blocks trimmed the roster; restore it so the split is meaningful. */
@@ -924,23 +978,26 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
         function (n) { return n.textContent.replace(/[0-9🔒]/g, '').trim(); })
     };
   });
-  check('it opens in the division head role', hod.role === 'hod', hod.role);
+  /* The handover file is the same application, not a cut-down one: every
+     screen and every setting is there, only the data is narrowed. */
+  check('it opens with full access', hod.role === 'admin', hod.role);
   check('it is titled for that division', hod.title.indexOf(hod.label) !== -1, hod.title);
   check('it carries only that division\'s people',
     hod.employees > 0 && hod.employees < 100, hod.employees + ' of 100');
   check('every carried employee is in scope', hod.inScope === hod.employees,
     hod.inScope + ' / ' + hod.employees);
-  check('the questionnaire designer is not offered',
-    !hod.nav.some(function (n) { return n.indexOf('طراحی') !== -1; }), hod.nav.join(' , '));
-  check('system settings are not offered',
-    !hod.nav.some(function (n) { return n.indexOf('تنظیمات') !== -1; }));
-  check('the head can still run the whole cycle',
+  check('the questionnaire designer is offered',
+    hod.nav.some(function (n) { return n.indexOf('طراحی') !== -1; }), hod.nav.join(' , '));
+  check('system settings are offered',
+    hod.nav.some(function (n) { return n.indexOf('تنظیمات') !== -1; }));
+  check('every screen of the cycle is there',
     ['پرسنل', 'ورود پاسخ‌ها', 'پاسخ‌ها', 'اعتبارسنجی', 'پرداخت کارانه', 'تعیین مبلغ', 'خروجی']
       .every(function (want) {
         return hod.nav.some(function (n) { return n.indexOf(want) !== -1; });
       }), hod.nav.join(' , '));
   check('a help section travels with the file',
     hod.nav.some(function (n) { return n.indexOf('راهنما') !== -1; }));
+  check('the guide is the first tab', /راهنما/.test(hod.nav[0]), hod.nav[0]);
 
   var hodHelp = await hodPage.evaluate(function () {
     window.App.go('help');
@@ -990,7 +1047,7 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
     var labels = Array.prototype.map.call(document.querySelectorAll('#main button'),
       function (b) { return b.textContent.trim(); });
     return { labels: labels,
-             hasSplit: labels.some(function (l) { return l.indexOf('تفکیک پرسشنامه') !== -1; }) };
+             hasSplit: labels.some(function (l) { return l.indexOf('به تفکیک مدیر مستقیم') !== -1; }) };
   });
   check('the personnel screen offers the manager split', hodSplit.hasSplit,
     hodSplit.labels.slice(0, 5).join(' , '));
