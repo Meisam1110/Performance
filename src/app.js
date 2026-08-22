@@ -158,7 +158,6 @@
     var st = freshState();
     st.package = payload.package;
     st.budgetSource = payload.budgetSource || '';
-    if (payload.logo) st.logo = payload.logo;
     st.period = payload.period || st.period;
     /* Full access, exactly like the file it came from: the head designs,
        configures, imports and exports without asking anyone. Only the data is
@@ -432,12 +431,17 @@
     return missing.join('، ');
   }
 
-  /** Who HR expects a questionnaire for. Leavers and non-active staff are out. */
+  /**
+   * Who a questionnaire is expected for: everyone on the roster.
+   *
+   * Non-active staff used to be left out. They are not: a person who worked
+   * part of the period is still assessed, and leaving them off the template
+   * meant their manager had no way to score them at all. Whether they then
+   * receive money is a separate question, decided by their answers and by the
+   * threshold — not by their employment status.
+   */
   function isPayrollEligible(e) {
-    var st = String(e.employeeStatus || '').trim().toLowerCase();
-    if (st === 'non active' || st === 'inactive' || st === 'غیرفعال') return false;
-    if (st === 'to be non active') return false;
-    return true;
+    return !!e;
   }
 
   function issueCount(severity) {
@@ -449,41 +453,32 @@
    * ====================================================================*/
 
   /**
-   * The brand mark.
+   * The Irancell mark, drawn inline so it needs no asset request.
    *
-   * Two sources: the organisation's own logo file if one has been loaded in
-   * settings (kept as a data URI so it travels inside the file), otherwise a
-   * drawn lockup in the corporate colours — the yellow badge with the group
-   * mark, and the Persian wordmark beside it. The drawn one is a stand-in, not
-   * the official artwork; loading the real file replaces it everywhere.
+   * The plate is the brand's own proportions (132 x 62): the Persian wordmark
+   * over the group mark, both reversed out of the plate. On the dark bar the
+   * plate reads as the mark's own black, so a hairline keeps its edge visible.
    */
   function logoMark() {
-    var custom = App.state && App.state.logo;
-    if (custom) {
-      var img = el('img', { class: 'logo-img', alt: 'نشان سازمان' });
-      img.src = custom;
-      return img;
-    }
-
     var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', '0 0 124 34');
-    svg.setAttribute('width', '110');
-    svg.setAttribute('height', '30');
+    svg.setAttribute('viewBox', '0 0 132 62');
+    svg.setAttribute('width', '70');
+    svg.setAttribute('height', '33');
     svg.setAttribute('role', 'img');
-    svg.setAttribute('aria-label', 'ایرانسل');
+    svg.setAttribute('aria-label', 'ایرانسل MTN');
     svg.setAttribute('style', 'direction:ltr');
     svg.innerHTML =
-      '<rect x="0" y="0" width="52" height="34" rx="9" fill="#FFCC00"/>' +
-      '<text x="26" y="24.5" text-anchor="middle" fill="#14161a"' +
-      ' font-family="Arial, Helvetica, sans-serif" font-weight="700"' +
-      ' font-size="19" letter-spacing="0.5">mtn</text>' +
+      '<rect x="1.1" y="1.1" width="129.8" height="59.8" rx="14"' +
+      ' fill="#000000" stroke="rgba(255,255,255,.55)" stroke-width="2.2"/>' +
       /* `start`, not `end`: inside an RTL text element the start edge is the
-         right one, so the word runs leftwards from x. Anchoring at `end` sent
-         it off the right of the viewBox and it vanished. */
-      '<text x="124" y="24" text-anchor="start" fill="currentColor" direction="rtl"' +
+         right one, so the word runs leftwards from x. */
+      '<text x="105" y="31" text-anchor="start" fill="#ffffff" direction="rtl"' +
       ' style="unicode-bidi:plaintext"' +
       ' font-family="MTN Irancell, Tahoma, sans-serif" font-weight="700"' +
-      ' font-size="19">ایرانسل</text>';
+      ' font-size="27">ایرانسل</text>' +
+      '<text x="66" y="52" text-anchor="middle" fill="#ffffff"' +
+      ' font-family="Arial, Helvetica, sans-serif" font-weight="700"' +
+      ' font-size="17" letter-spacing="1.6">MTN</text>';
     return svg;
   }
 
@@ -497,10 +492,6 @@
       el('span', { class: 'title', text: 'سامانه مدیریت کارانه' }),
       el('span', { class: 'period', id: 'periodChip', text: App.state.period }),
       el('div', { class: 'spacer' }),
-      el('button', {
-        class: 'role-pill', id: 'rolePill', title: 'تغییر سطح دسترسی',
-        onclick: function () { openRolePicker(); }
-      }),
       el('button', {
         class: 'iconbtn', id: 'themeBtn', title: 'حالت روشن / تاریک',
         onclick: function () { toggleTheme(); }
@@ -542,14 +533,9 @@
     U.clear(bar);
 
     NAV.forEach(function (n) {
-      if (n.phase) {
-        bar.appendChild(el('span', { class: 'sep' }));
-        bar.appendChild(el('span', { class: 'navphase-tag', title: n.label }, [
-          el('span', { class: 'n', text: String(n.phase) })
-        ]));
-        return;
-      }
-      if (n.group) { bar.appendChild(el('span', { class: 'sep' })); return; }
+      /* Phases are a separator, not a badge: a bare "1" and "2" in the bar
+         told nobody anything. */
+      if (n.phase || n.group) { bar.appendChild(el('span', { class: 'sep' })); return; }
       if (n.adminOnly && !isAdmin()) return;
 
       var locked = n.needsPhase1 && !phase1Ready();
@@ -587,8 +573,6 @@
       ]));
     });
 
-    var pill = document.getElementById('rolePill');
-    if (pill) pill.textContent = ROLES[role()].icon + '  ' + ROLES[role()].label;
     applyTheme();
     renderStrip();
   }
@@ -771,84 +755,10 @@
     fn(main);
   }
 
-  /**
-   * Switching role changes what the sidebar offers and, for a division head,
-   * narrows every table to their own people. It is a workflow control, not a
-   * security boundary — all the data still lives in this browser.
-   */
-  function openRolePicker() {
-    var divisions = {};
-    App.state.employees.forEach(function (e) { if (e.division) divisions[e.division] = 1; });
-    App.state.questionnaires.forEach(function (q) { if (q.division) divisions[q.division] = 1; });
-    var list = Object.keys(divisions).sort(function (a, b) { return a.localeCompare(b, 'fa'); });
-
-    var chosenRole = role();
-    var scope = (App.state.hodScope || []).slice();
-
-    var scopeBox = el('div', { style: 'margin-top:10px' });
-    function renderScope() {
-      U.clear(scopeBox);
-      if (chosenRole !== 'hod') return;
-      scopeBox.appendChild(el('div', { class: 'small muted mb',
-        text: 'واحدهایی که این معاون بخش مسئول آن‌هاست. اگر هیچ‌کدام انتخاب نشود، کل سازمان در دسترس خواهد بود.' }));
-      if (!list.length) {
-        scopeBox.appendChild(el('div', { class: 'small muted', text: 'هنوز واحدی در داده‌ها وجود ندارد.' }));
-        return;
-      }
-      list.forEach(function (d) {
-        var cb = el('input', { type: 'checkbox' });
-        cb.checked = scope.indexOf(d) !== -1;
-        cb.addEventListener('change', function () {
-          if (cb.checked) { if (scope.indexOf(d) === -1) scope.push(d); }
-          else scope = scope.filter(function (x) { return x !== d; });
-        });
-        scopeBox.appendChild(el('label', { class: 'checkline' }, [cb, el('span', { text: d })]));
-      });
-    }
-
-    var body = el('div', {});
-    Object.keys(ROLES).forEach(function (key) {
-      var radio = el('input', { type: 'radio', name: 'role' });
-      radio.checked = key === chosenRole;
-      radio.addEventListener('change', function () { chosenRole = key; renderScope(); });
-      body.appendChild(el('label', {
-        class: 'checkline',
-        style: 'border:1px solid var(--border);border-radius:7px;padding:9px 11px;margin-bottom:8px'
-      }, [
-        radio,
-        el('div', {}, [
-          el('b', { text: ROLES[key].icon + '  ' + ROLES[key].label }),
-          el('div', { class: 'small muted', text: key === 'admin'
-            ? 'دسترسی کامل: طراحی پرسشنامه، ورود اطلاعات، محاسبات و تنظیمات.'
-            : 'فقط مرحلهٔ ۲: مشاهدهٔ محاسبات و تعیین مبلغ برای پرسنل واحدهای خود.' })
-        ])
-      ]));
-    });
-    body.appendChild(scopeBox);
-    renderScope();
-
-    U.modal({
-      title: 'سطح دسترسی', size: 'narrow', content: body,
-      buttons: [
-        { label: 'اعمال', kind: 'primary', onClick: function () {
-          var oldRole = App.state.role;
-          App.state.role = chosenRole;
-          App.state.hodScope = chosenRole === 'hod' ? scope : [];
-          Store.audit(App.state, {
-            entity: 'access', field: 'role', oldValue: oldRole, newValue: chosenRole,
-            reason: chosenRole === 'hod' && scope.length
-              ? 'محدود به واحدهای: ' + scope.join('، ') : 'تغییر سطح دسترسی'
-          });
-          save().then(function () {
-            renderShell();
-            go(canOpen(App.view) ? App.view : (chosenRole === 'hod' ? 'dashboard' : 'validation'));
-            U.toast('سطح دسترسی به «' + ROLES[chosenRole].label + '» تغییر کرد.', 'ok');
-          });
-        } },
-        { label: 'انصراف' }
-      ]
-    });
-  }
+  /* There is no role switch any more: HR's file and the files it generates
+     are the same application, and which file you hold is the answer. `role`
+     stays in the state — every file is 'admin' — so the scope helpers and the
+     stored data of older files keep working unchanged. */
 
   function head(title, subtitle, actions) {
     return el('div', { class: 'view-head' }, [
@@ -1319,7 +1229,7 @@
       U.int(staff.length || scoped.length), { kind: 'brand' }));
     grid.appendChild(U.kpi('دارای پرسشنامه', U.int(withQ), { kind: 'info' }));
     grid.appendChild(U.kpi('فاقد پرسشنامه', U.int(missing),
-      { kind: missing ? 'warn' : '', sub: 'از میان پرسنل فعال' }));
+      { kind: missing ? 'warn' : '', sub: 'از کل پرسنل' }));
     grid.appendChild(U.kpi('واجد شرایط', U.int(eligible),
       { kind: 'ok', sub: 'امتیاز بالاتر از حد نصاب' }));
     grid.appendChild(U.kpi('زیر حد نصاب', U.int(ineligible), { kind: ineligible ? 'warn' : '' }));
@@ -1358,9 +1268,25 @@
     var scoreHost = el('div', {});
     var levelHost = el('div', {});
 
+    /* In a file that covers one division, a chart broken down by division is
+       one bar. What the head of that division actually compares is their
+       managers — the same names the questionnaires were split by. */
+    var breakdownField = App.state.breakdownField || defaultBreakdownField(scoped);
+    var breakdownPick = el('select', { class: 'editable', style: 'font-size:12px' },
+      BREAKDOWNS.map(function (b) {
+        return el('option', { value: b.key, text: b.label });
+      }));
+    breakdownPick.value = breakdownField;
+    breakdownPick.addEventListener('change', function () {
+      App.state.breakdownField = breakdownPick.value;
+      save();
+      renderView();
+    });
+
     var charts = el('div', { class: 'chart-grid-2' }, [
-      U.card('کارانه به تفکیک واحد سازمانی', divisionHost,
-        { hint: 'مجموع پرداختی هر واحد (ریال)' }),
+      U.card(el('span', { style: 'display:flex;align-items:center;gap:8px' }, [
+        el('span', { text: 'کارانه به تفکیک' }), breakdownPick
+      ]), divisionHost, { hint: 'مجموع پرداختی هر گروه (ریال)' }),
       U.card('توزیع امتیاز عملکرد', scoreHost,
         { hint: 'تعداد افراد در هر بازهٔ امتیاز' }),
       U.card('ترکیب وضعیت پرسنل', el('div', {}, [statusHost, statusLegendHost]),
@@ -1381,7 +1307,7 @@
       drawDashboardCharts(scoped, {
         division: divisionHost, status: statusHost, statusLegend: statusLegendHost,
         score: scoreHost, level: levelHost
-      });
+      }, breakdownField);
       App.grids.unified = unifiedGrid(scoped);
       tableCard.appendChild(App.grids.unified.node);
     });
@@ -1394,13 +1320,41 @@
     });
   }
 
-  function drawDashboardCharts(rows, hosts) {
-    var cfg = App.state.config;
+  var BREAKDOWNS = [
+    { key: 'division',      label: 'واحد سازمانی' },
+    { key: 'directManager', label: 'مدیر مستقیم' },
+    { key: 'managerLevel1', label: 'مدیر سطح ۱' },
+    { key: 'managerLevel2', label: 'مدیر سطح ۲' },
+    { key: 'positionTitle', label: 'عنوان شغلی' }
+  ];
 
-    /* Magnitude by division — horizontal, because unit names are long. */
+  /**
+   * What to break the payout chart down by, before anyone has chosen.
+   * One division in the file means the division chart says nothing, so the
+   * manager names — the ones the questionnaires were split by — are used.
+   */
+  function defaultBreakdownField(rows) {
+    var divisions = {};
+    rows.forEach(function (r) { if (r.division) divisions[r.division] = 1; });
+    if (Object.keys(divisions).length > 1) return 'division';
+    var managed = rows.filter(function (r) { return managerOf(r, 'directManager'); }).length;
+    return managed ? 'directManager' : 'division';
+  }
+
+  function breakdownValue(row, field) {
+    if (field === 'division') return row.division || '';
+    if (field === 'positionTitle') return row.positionTitle || '';
+    return managerOf(row, field);
+  }
+
+  function drawDashboardCharts(rows, hosts, breakdownField) {
+    var cfg = App.state.config;
+    var field = breakdownField || 'division';
+
+    /* Magnitude by group — horizontal, because unit and manager names are long. */
     var byDiv = {};
     rows.forEach(function (r) {
-      var d = r.division || 'بدون واحد';
+      var d = breakdownValue(r, field) || '— ثبت نشده';
       var g = byDiv[d] || (byDiv[d] = { amount: 0, count: 0, eligible: 0 });
       g.amount += r.finalKaraneh; g.count++;
       if (r.eligible) g.eligible++;
@@ -2672,23 +2626,31 @@
     var box = el('div', {});
 
     function liveNumber(label, key, step, hint, format) {
-      var inp = el('input', {
-        type: 'number', class: 'editable', step: step || 'any',
-        style: 'width:100%;font-weight:700'
-      });
-      inp.value = cfg[key];
+      var isMoney = !!format;
+      var inp = isMoney
+        ? U.moneyInput({ style: 'width:100%;font-weight:700', value: cfg[key] })
+        : el('input', {
+            type: 'number', class: 'editable', step: step || 'any',
+            style: 'width:100%;font-weight:700'
+          });
+      if (!isMoney) inp.value = cfg[key];
+      function read() { return isMoney ? inp.getNumber() : Number(inp.value); }
+      function reset() {
+        if (isMoney) inp.setNumber(cfg[key]); else inp.value = cfg[key];
+      }
       /* The hint already sits next to the label; the echo underneath is only
          for a live readback of the typed number, so it stays empty without a
          formatter rather than repeating the hint. */
       var echo = el('div', { class: 'small muted', style: 'margin-top:3px' });
       function renderEcho() {
-        echo.textContent = format ? format(Number(inp.value)) : '';
+        var v = read();
+        echo.textContent = format && v !== null ? format(Number(v)) : '';
       }
       renderEcho();
       inp.addEventListener('input', renderEcho);
       inp.addEventListener('change', function () {
-        var v = Number(inp.value);
-        if (!isFinite(v) || v < 0) { inp.value = cfg[key]; renderEcho(); return; }
+        var v = read();
+        if (v === null || !isFinite(v) || v < 0) { reset(); renderEcho(); return; }
         if (Number(cfg[key]) === v) return;
         setConfig(key, v);
         renderView();
@@ -2860,12 +2822,12 @@
       { kind: t.hodRedistribution < 0 ? 'warn' : '' }));
     main.appendChild(strip);
 
-    /* The report first, the controls under it, the roster last — read the
-       shape of the outcome, adjust the budget, then go person by person. */
+    /* The budget first, then what it produced, then the roster: the number is
+       the input to this screen, so it sits at the top of it. */
+    main.appendChild(U.card('بودجه و پارامترها', budgetPanel(),
+      { hint: 'عدد را همین‌جا وارد کنید؛ گزارش و جدول پایین لحظه‌ای بازمحاسبه می‌شوند' }));
     main.appendChild(U.card('مجموع دریافتی به تفکیک سطح شغلی', levelSummary(scoped),
       { hint: 'با هر تغییر بودجه یا امتیاز، بلافاصله به‌روز می‌شود' }));
-    main.appendChild(U.card('بودجه و پارامترها', budgetPanel(),
-      { hint: 'عدد را همین‌جا وارد کنید؛ جدول پایین لحظه‌ای بازمحاسبه می‌شود' }));
 
 
     var grid = U.DataGrid({
@@ -3058,9 +3020,9 @@
     }
     var ceiling = Engine.maxAllowedAdjustment(App.result, employeeId);
 
-    var amount = el('input', {
-      type: 'number', class: 'editable', style: 'width:100%', step: '1000000',
-      value: r.isOverridden ? String(r.hodAdjustment) : ''
+    var amount = U.moneyInput({
+      style: 'width:100%',
+      value: r.isOverridden ? r.hodAdjustment : ''
     });
     var comment = el('textarea', {
       class: 'editable', style: 'width:100%;min-height:70px',
@@ -3071,7 +3033,7 @@
     var preview = el('div', {});
     function renderPreview() {
       U.clear(preview);
-      var v = amount.value === '' ? null : Number(amount.value);
+      var v = amount.getNumber();
       var others = App.result.rows.filter(function (x) {
         return x.inScope && x.eligible && !x.isOverridden && x.employeeId !== employeeId;
       });
@@ -3130,7 +3092,7 @@
       ]),
       buttons: [
         { label: 'ثبت', kind: 'primary', keepOpen: true, onClick: function (close) {
-          var v = amount.value === '' ? null : Number(amount.value);
+          var v = amount.getNumber();
           if (v === null) { U.toast('مبلغ را وارد کنید.', 'err'); return false; }
           if (!isFinite(v) || v < 0) { U.toast('مبلغ باید عددی مثبت باشد.', 'err'); return false; }
           if (!comment.value.trim()) {
@@ -3734,11 +3696,17 @@
       'هیچ‌یک از این مقادیر در کد ثابت نشده است. تغییر هر کدام، کل محاسبات را بلافاصله بازمحاسبه می‌کند.'));
 
     function numberField(label, key, step, hint) {
-      var inp = el('input', { type: 'number', class: 'editable', style: 'width:100%', step: step || 'any' });
-      inp.value = cfg[key];
+      var isMoney = key === 'budget';
+      var inp = isMoney
+        ? U.moneyInput({ style: 'width:100%', value: cfg[key] })
+        : el('input', { type: 'number', class: 'editable', style: 'width:100%', step: step || 'any' });
+      if (!isMoney) inp.value = cfg[key];
       inp.addEventListener('change', function () {
-        var v = Number(inp.value);
-        if (!isFinite(v)) { inp.value = cfg[key]; return; }
+        var v = isMoney ? inp.getNumber() : Number(inp.value);
+        if (v === null || !isFinite(v)) {
+          if (isMoney) inp.setNumber(cfg[key]); else inp.value = cfg[key];
+          return;
+        }
         setConfig(key, v);
       });
       return el('label', { class: 'field' }, [
@@ -3789,70 +3757,6 @@
     });
     main.appendChild(U.card('بودجه و پارامترها', params));
 
-    /* -- brand mark -----------------------------------------------------
-       The drawn mark is a stand-in. Loading the official file replaces it
-       everywhere, including inside the files generated for division heads,
-       so it is stored as a data URI rather than a path. */
-    var logoBox = el('div', {});
-    var logoPreview = el('div', {
-      style: 'display:flex;align-items:center;gap:14px;padding:10px 14px;border-radius:9px;' +
-             'background:var(--nav-bg);color:var(--nav-ink);margin-bottom:10px'
-    });
-    function renderLogoPreview() {
-      U.clear(logoPreview);
-      logoPreview.appendChild(el('span', { class: 'logo' }, [logoMark()]));
-      logoPreview.appendChild(el('span', { style: 'font-weight:700;font-size:13px',
-        text: 'سامانه مدیریت کارانه' }));
-    }
-    renderLogoPreview();
-    logoBox.appendChild(logoPreview);
-
-    var logoInput = el('input', {
-      type: 'file', accept: 'image/png,image/svg+xml,image/jpeg', style: 'display:none'
-    });
-    logoInput.addEventListener('change', function () {
-      var f = logoInput.files && logoInput.files[0];
-      logoInput.value = '';
-      if (!f) return;
-      /* The mark rides inside every generated file, so an oversized bitmap
-         would be paid for once per division head. */
-      if (f.size > 300 * 1024) {
-        U.toast('حجم فایل نشان بیش از ۳۰۰ کیلوبایت است. نسخهٔ کوچک‌تر یا SVG بگذارید.', 'warn', 7000);
-        return;
-      }
-      var r = new FileReader();
-      r.onload = function () {
-        App.state.logo = String(r.result);
-        save();
-        Store.audit(App.state, {
-          entity: 'config', field: 'logo', oldValue: '', newValue: f.name,
-          reason: 'بارگذاری نشان سازمان'
-        });
-        renderShell();
-        go('settings');
-        U.toast('نشان سازمان جایگزین شد.', 'ok');
-      };
-      r.readAsDataURL(f);
-    });
-    logoBox.appendChild(logoInput);
-
-    logoBox.appendChild(el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, [
-      btn('بارگذاری فایل نشان', function () { logoInput.click(); }, 'primary'),
-      App.state.logo ? btn('حذف و بازگشت به نشان پیش‌فرض', function () {
-        delete App.state.logo;
-        save();
-        renderShell();
-        go('settings');
-      }, 'danger') : null
-    ].filter(Boolean)));
-
-    logoBox.appendChild(el('div', { class: 'small muted', style: 'margin-top:8px;line-height:1.9' },
-      [document.createTextNode(
-        'نشان پیش‌فرض یک طرح جایگزین در رنگ‌های سازمانی است، نه فایل رسمی برند. ' +
-        'فایل رسمی (ترجیحاً SVG) را اینجا بارگذاری کنید تا در نوار بالا و در همهٔ ' +
-        'فایل‌هایی که برای معاونان تولید می‌شود، همان نمایش داده شود.')]));
-
-    main.appendChild(U.card('نشان سازمان', logoBox));
 
     /* -- grade impact ---------------------------------------------------
        Its own panel rather than one field among many: turning grade on moves
@@ -5112,6 +5016,9 @@
 
   /* Exposed so the end-to-end test can drive the export without going through
      the modal, the same way `recalc` is exposed for the rest of the suite. */
+  /* Test hook: the roster a questionnaire template is built from. */
+  window.__templateRoster = function (filter) { return templateRoster(filter); };
+
   window.__runManagerExport = function (field, label, mode) {
     runManagerExport(field || 'directManager', label || 'مدیر مستقیم', mode || 'sheets');
   };
@@ -5263,7 +5170,6 @@
       theme: App.state.theme || 'light',
       scope: scope || slice.divisions,
       config: config,
-      logo: App.state.logo || '',
       budgetSource: share > 0 ? 'سهم این گروه از تخصیص منابع انسانی' : '',
       columnMappings: JSON.parse(JSON.stringify(App.state.columnMappings)),
       mail: JSON.parse(JSON.stringify(App.state.mail || {})),

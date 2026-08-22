@@ -288,7 +288,12 @@
     container.innerHTML = '';
     var f = frame(container, 14);
     var frac = limit ? Math.min(1, used / limit) : 0;
-    var over = limit && used > limit ? Math.min(1, (used - limit) / limit) : 0;
+    /* Reconciliation leaves sub-rial dust on a hundred-billion pot, so an exact
+       allocation can land a hair above the budget. Anything inside a rial is
+       balanced, not an overrun — painting it red contradicted the status chip
+       sitting right beside it. */
+    var slack = limit ? Math.max(1, Math.abs(limit) * 1e-9) : 0;
+    var over = limit && used - limit > slack ? Math.min(1, (used - limit) / limit) : 0;
 
     f.svg.appendChild(svgEl('rect', {
       x: 0, y: 1, width: f.w, height: 12, rx: 6, fill: 'var(--chart-track)'

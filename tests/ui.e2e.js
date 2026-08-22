@@ -42,8 +42,10 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   check('no page errors on boot', pageErrors.length === 0, pageErrors.join(' | '));
 
   var navCount = await page.locator('.navitem').count();
-  var phaseCount = await page.locator('.navphase-tag').count();
-  check('navigation is split into two phases', phaseCount === 2, phaseCount + ' phase headers');
+  var sepCount = await page.locator('.navbar .sep').count();
+  check('the phases are separated without unexplained badges',
+    sepCount >= 2 && await page.locator('.navphase-tag').count() === 0,
+    sepCount + ' separators');
   check('navigation sits in a horizontal bar',
     await page.locator('.navbar .navitem').count() > 0);
   check('all navigation entries render for the admin role', navCount === 12, navCount + ' items');
@@ -82,13 +84,15 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   check('the guide is the first tab', /راهنما/.test(shell.first), shell.first);
   /* The wordmark is anchored inside an RTL text element, where `start` is the
      right edge; anchored the other way it rendered off the viewBox. */
-  check('the brand mark draws both of its parts inside the box',
+  check('the brand mark draws its plate and both lines',
     shell.parts.length === 3 && shell.parts.every(function (p) {
       return p.width > 8 && p.left >= 0;
     }), JSON.stringify(shell.parts));
-  check('the wordmark sits beside the badge, not on top of it',
-    shell.parts[2].left >= shell.parts[0].left + shell.parts[0].width,
-    shell.parts[0].left + '+' + shell.parts[0].width + ' vs ' + shell.parts[2].left);
+  check('both lines sit inside the plate',
+    shell.parts.slice(1).every(function (p) {
+      return p.left >= shell.parts[0].left &&
+             p.left + p.width <= shell.parts[0].left + shell.parts[0].width + 1;
+    }), JSON.stringify(shell.parts));
 
   console.log('\n== LOAD SAMPLE DATA ==');
   /* The workbook data goes in exactly as it stands — no fix-ups. The
@@ -276,8 +280,11 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
       if (btns[i].textContent.indexOf('تعیین') !== -1) { btns[i].click(); return; }
     }
   });
-  await page.waitForSelector('.modal input[type="number"]');
-  await page.locator('.modal input[type="number"]').fill('1000000000');
+  await page.waitForSelector('.modal input.num');
+  await page.locator('.modal input.num').fill('1000000000');
+  check('the amount field groups its digits as it is typed',
+    (await page.locator('.modal input.num').inputValue()) === '1,000,000,000',
+    await page.locator('.modal input.num').inputValue());
   await page.locator('.modal footer button.primary').click();
   await page.waitForTimeout(300);
   var stillOpen = await page.locator('.modal').count();
@@ -823,32 +830,29 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   var payScreen = await page.evaluate(function () {
     var cards = Array.prototype.map.call(document.querySelectorAll('#main .card > h2'),
       function (h) { return h.textContent.trim(); });
-    var budgetInput = null;
-    document.querySelectorAll('#main input[type="number"]').forEach(function (i) {
-      if (String(i.value) === String(window.App.state.config.budget)) budgetInput = i;
-    });
-    return { cards: cards, hasBudgetInput: !!budgetInput };
+    var budgetInput = document.querySelector('#main input.num');
+    return { cards: cards, hasBudgetInput: !!budgetInput,
+             shown: budgetInput ? budgetInput.value : '' };
   });
-  check('the payment screen leads with the per-level report',
-    /سطح شغلی/.test(payScreen.cards[0] || ''), payScreen.cards.slice(0, 3).join(' | '));
+  check('the payment screen leads with the budget panel',
+    /بودجه/.test(payScreen.cards[0] || ''), payScreen.cards.slice(0, 3).join(' | '));
+  check('the per-level report comes right after it',
+    /سطح شغلی/.test(payScreen.cards[1] || ''), payScreen.cards.slice(0, 3).join(' | '));
   check('the budget is editable on the payment screen', payScreen.hasBudgetInput);
+  check('the budget is shown with thousand separators',
+    payScreen.shown === '100,000,000,000', payScreen.shown);
 
   var liveBudget = await page.evaluate(function () {
+    function setBudget(v) {
+      var input = document.querySelector('#main input.num');
+      input.value = v;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
     var before = window.App.result.totals.sumFinalKaraneh;
-    var input = null;
-    document.querySelectorAll('#main input[type="number"]').forEach(function (i) {
-      if (String(i.value) === String(window.App.state.config.budget)) input = i;
-    });
-    input.value = '60000000000';
-    input.dispatchEvent(new Event('change', { bubbles: true }));
+    setBudget('60000000000');
     var after = window.App.result.totals.sumFinalKaraneh;
-    /* put it back */
-    var input2 = null;
-    document.querySelectorAll('#main input[type="number"]').forEach(function (i) {
-      if (String(i.value) === '60000000000') input2 = i;
-    });
-    input2.value = '100000000000';
-    input2.dispatchEvent(new Event('change', { bubbles: true }));
+    setBudget('100000000000');
     return { before: before, after: after, restored: window.App.result.totals.sumFinalKaraneh };
   });
   check('editing the budget there recalculates immediately',
@@ -888,20 +892,68 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   });
   check('the guide no longer calls it a tray', wording.noTray);
 
-  var logoCard = await page.evaluate(function () {
-    window.App.go('settings');
-    var cards = Array.prototype.slice.call(document.querySelectorAll('#main .card'));
-    var card = cards.filter(function (c) { return /نشان سازمان/.test(c.textContent); })[0];
-    if (!card) return { ok: false };
+  var nonActive = await page.evaluate(function () {
+    var st = window.App.state;
+    var target = st.employees[0];
+    target.employeeStatus = 'Non Active';
+    window.App.recalc();
+    window.App.go('employees');
+    /* The template roster is what a manager receives to fill in. */
+    var roster = window.__templateRoster ? window.__templateRoster() : null;
     return {
-      ok: true,
-      accepts: (card.querySelector('input[type="file"]') || {}).accept || '',
-      hasPreview: !!card.querySelector('svg, img')
+      id: target.employeeId,
+      inRoster: roster ? roster.some(function (r) { return r.employeeId === target.employeeId; }) : null,
+      rosterSize: roster ? roster.length : null,
+      staff: st.employees.length
     };
   });
-  check('settings offers to replace the brand mark with the official file',
-    logoCard.ok && /svg/.test(logoCard.accepts), JSON.stringify(logoCard));
-  check('the brand-mark card previews what will be shown', logoCard.hasPreview);
+  check('a non-active employee still gets a questionnaire row',
+    nonActive.inRoster === true, nonActive.id + ' in ' + nonActive.rosterSize);
+  check('the template roster covers the whole roster',
+    nonActive.rosterSize === nonActive.staff,
+    nonActive.rosterSize + ' of ' + nonActive.staff);
+  await page.evaluate(function () {
+    window.App.state.employees[0].employeeStatus = 'Active';
+    window.App.recalc();
+  });
+
+  var breakdown = await page.evaluate(function () {
+    window.App.go('dashboard');
+    var pick = document.querySelector('#main select');
+    var before = pick ? pick.value : '';
+    var labels = function () {
+      return Array.prototype.map.call(
+        document.querySelectorAll('#main .card .chart svg text'),
+        function (t) { return t.textContent; });
+    };
+    return { options: pick ? Array.prototype.map.call(pick.options, function (o) { return o.value; }) : [],
+             value: before, labels: labels().slice(0, 6) };
+  });
+  check('the payout chart offers a breakdown by manager',
+    breakdown.options.indexOf('directManager') !== -1, breakdown.options.join(','));
+  check('with several divisions it still breaks down by division',
+    breakdown.value === 'division', breakdown.value);
+
+  var switched = await page.evaluate(function () {
+    var pick = document.querySelector('#main select');
+    pick.value = 'directManager';
+    pick.dispatchEvent(new Event('change', { bubbles: true }));
+    return new Promise(function (res) {
+      setTimeout(function () {
+        res(Array.prototype.map.call(
+          document.querySelectorAll('#main .card .chart svg text'),
+          function (t) { return t.textContent; }).join(' '));
+      }, 400);
+    });
+  });
+  check('switching it redraws by manager name', /مدیر/.test(switched),
+    switched.slice(0, 60));
+  await page.evaluate(function () {
+    var pick = document.querySelector('#main select');
+    pick.value = 'division';
+    pick.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await page.waitForTimeout(300);
 
   console.log('\n== HANDOVER: HR ISSUES A DIVISION-HEAD FILE ==');
   await page.evaluate(function () {
@@ -1028,12 +1080,10 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
 
   var hodBudget = await hodPage.evaluate(function () {
     window.App.go('payment');
-    var input = null;
-    document.querySelectorAll('#main input[type="number"]').forEach(function (i) {
-      if (String(i.value) === String(window.App.state.config.budget)) input = i;
-    });
+    var input = document.querySelector('#main input.num');
     if (!input) return { ok: false };
     input.value = '8000000000';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
     return { ok: true, sum: window.App.result.totals.sumFinalKaraneh,
              status: window.App.result.totals.budgetStatus };
@@ -1049,9 +1099,28 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
     return { labels: labels,
              hasSplit: labels.some(function (l) { return l.indexOf('به تفکیک مدیر مستقیم') !== -1; }) };
   });
+  var pkgBreakdown = await hodPage.evaluate(function () {
+    window.App.go('dashboard');
+    return new Promise(function (res) {
+      setTimeout(function () {
+        var pick = document.querySelector('#main select');
+        res({ value: pick ? pick.value : '',
+              labels: Array.prototype.map.call(
+                document.querySelectorAll('#main .card .chart svg text'),
+                function (t) { return t.textContent; }).join(' ') });
+      }, 500);
+    });
+  });
+  check('a one-division file breaks the payout chart down by manager',
+    pkgBreakdown.value === 'directManager', pkgBreakdown.value);
+  check('the manager names are the ones the questionnaires were split by',
+    /مدیر/.test(pkgBreakdown.labels), pkgBreakdown.labels.slice(0, 60));
+
   check('the personnel screen offers the manager split', hodSplit.hasSplit,
     hodSplit.labels.slice(0, 5).join(' , '));
 
+  await hodPage.evaluate(function () { window.App.go('employees'); });
+  await hodPage.waitForSelector('#main .card');
   var splitDl = hodPage.waitForEvent('download', { timeout: 20000 });
   await hodPage.evaluate(function () {
     document.querySelectorAll('#main button').forEach(function (b) {

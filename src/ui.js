@@ -51,6 +51,58 @@
     return (v * 100).toFixed(decimals === undefined ? 1 : decimals) + '٪';
   }
 
+  /**
+   * A rial field that stays readable while it is being typed.
+   *
+   * `<input type="number">` cannot show thousand separators — the browser
+   * rejects the commas — so a large budget appears as an unreadable run of
+   * zeros. This is a text field that groups the digits as they are entered and
+   * hands back a plain number.
+   */
+  function moneyInput(attrs) {
+    var inp = el('input', Object.assign({
+      type: 'text', inputmode: 'numeric', autocomplete: 'off', class: 'editable num'
+    }, attrs || {}));
+
+    function digitsBefore(str, caret) {
+      return (str.slice(0, caret).match(/\d/g) || []).length;
+    }
+    function caretForDigits(str, n) {
+      if (n <= 0) return 0;
+      var seen = 0;
+      for (var i = 0; i < str.length; i++) {
+        if (/\d/.test(str[i])) { seen++; if (seen === n) return i + 1; }
+      }
+      return str.length;
+    }
+    function format() {
+      var caret = inp.selectionStart === null ? inp.value.length : inp.selectionStart;
+      var wanted = digitsBefore(inp.value, caret);
+      var neg = /^\s*-/.test(inp.value);
+      var digits = (inp.value.match(/\d/g) || []).join('');
+      var out = digits ? Number(digits).toLocaleString('en-US') : '';
+      if (neg && out) out = '-' + out;
+      if (out !== inp.value) {
+        inp.value = out;
+        try { var c = caretForDigits(out, wanted); inp.setSelectionRange(c, c); } catch (e) {}
+      }
+    }
+    inp.addEventListener('input', format);
+
+    inp.setNumber = function (v) {
+      inp.value = (v === null || v === undefined || v === '') ? ''
+        : Number(v).toLocaleString('en-US');
+    };
+    inp.getNumber = function () {
+      var digits = (inp.value.match(/\d/g) || []).join('');
+      if (!digits) return null;
+      var n = Number(digits);
+      return /^\s*-/.test(inp.value) ? -n : n;
+    };
+    if (attrs && attrs.value !== undefined) inp.setNumber(attrs.value);
+    return inp;
+  }
+
   function int(v) {
     if (v === null || v === undefined || !isFinite(v)) return '—';
     return Math.round(v).toLocaleString('en-US');
@@ -517,8 +569,10 @@
 
   function card(title, bodyNode, opts) {
     opts = opts || {};
+    /* A card title is normally text, but may be a node when it carries a
+       control — a breakdown picker, say — beside the words. */
     var h = el('h2', {}, [
-      el('span', { text: title }),
+      (title && title.nodeType) ? title : el('span', { text: title }),
       opts.hint ? el('span', { class: 'hint', text: opts.hint }) : null,
       opts.right ? el('span', { class: 'right' }, opts.right) : null
     ]);
@@ -529,7 +583,7 @@
 
   return {
     money: money, moneyShort: moneyShort, score: score, percent: percent,
-    int: int, dateTime: dateTime, esc: esc,
+    int: int, dateTime: dateTime, esc: esc, moneyInput: moneyInput,
     el: el, clear: clear, $: $, $$: $$,
     toast: toast, modal: modal, confirm: confirm,
     DataGrid: DataGrid, kpi: kpi, alert: alert, card: card, bidi: bidi,
