@@ -171,7 +171,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
   background: var(--nav-bg); color: var(--nav-ink); z-index: 40;
 }
 .brandbar .logo { display: flex; align-items: center; gap: 10px; }
-.brandbar .logo svg { display: block; }
+.brandbar .logo svg { display: block; border-radius: 3px; }
 .brandbar .title { font-weight: 700; font-size: 14.5px; white-space: nowrap; letter-spacing: .1px; }
 .brandbar .period {
   font-size: 11.5px; padding: 2px 10px; border-radius: 20px;
@@ -4539,32 +4539,30 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
   /**
    * The Irancell mark, drawn inline so it needs no asset request.
    *
-   * Same geometry as the supplied artwork (128 x 70): a black plate with the
-   * Persian wordmark over the group mark, both reversed out of it. The bar it
-   * sits on is nearly black, so a hairline keeps the plate's edge visible —
-   * without it the mark reads as loose white text.
+   * The supplied artwork: a yellow square, a black ellipse outline, and the
+   * Persian wordmark over the group mark inside it. Drawn rather than embedded
+   * so it stays sharp at any size and adds nothing to the file's weight.
    */
   function logoMark() {
     var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', '0 0 128 70');
-    svg.setAttribute('width', '62');
+    svg.setAttribute('viewBox', '0 0 120 120');
+    svg.setAttribute('width', '34');
     svg.setAttribute('height', '34');
     svg.setAttribute('role', 'img');
     svg.setAttribute('aria-label', 'ایرانسل MTN');
     svg.setAttribute('style', 'direction:ltr');
     svg.innerHTML =
-      '<rect x="1.2" y="1.2" width="125.6" height="67.6" rx="16"' +
-      ' fill="#000000" stroke="rgba(255,255,255,.45)" stroke-width="2.4"/>' +
-      /* `start`, not `end`: inside an RTL text element the start edge is the
-         right one, so the word runs leftwards from x. */
+      '<rect x="0" y="0" width="120" height="120" fill="#FFCC00"/>' +
+      '<ellipse cx="60" cy="60" rx="49" ry="25.5" fill="none"' +
+      ' stroke="#000000" stroke-width="4.8"/>' +
       /* Centred, so the anchor does not depend on the run's direction. */
-      '<text x="64" y="37" text-anchor="middle" fill="#ffffff" direction="rtl"' +
+      '<text x="60" y="62" text-anchor="middle" fill="#000000" direction="rtl"' +
       ' style="unicode-bidi:plaintext"' +
       ' font-family="MTN Irancell, Tahoma, sans-serif" font-weight="700"' +
-      ' font-size="25">ایرانسل</text>' +
-      '<text x="64" y="60" text-anchor="middle" fill="#ffffff"' +
+      ' font-size="19">ایرانسل</text>' +
+      '<text x="60" y="77" text-anchor="middle" fill="#000000"' +
       ' font-family="Arial, Helvetica, sans-serif" font-weight="700"' +
-      ' font-size="15" letter-spacing="1.3">MTN</text>';
+      ' font-size="12.5" letter-spacing="0.6">MTN</text>';
     return svg;
   }
 

@@ -75,22 +75,25 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
     var nav = Array.prototype.map.call(document.querySelectorAll('.navitem'),
       function (n) { return n.textContent.replace(/[0-9🔒]/g, '').trim(); });
     var svg = document.querySelector('.brandbar .logo svg');
-    var parts = Array.prototype.map.call(svg.querySelectorAll('rect, text'), function (n) {
+    var parts = Array.prototype.map.call(svg.querySelectorAll('rect, ellipse, text'), function (n) {
       var r = n.getBoundingClientRect();
       return { tag: n.tagName, txt: n.textContent, left: Math.round(r.left), width: Math.round(r.width) };
     });
-    return { first: nav[0], parts: parts, box: Math.round(svg.getBoundingClientRect().width) };
+    var field = svg.querySelector('rect');
+    return { first: nav[0], parts: parts, fill: field.getAttribute('fill'),
+             box: Math.round(svg.getBoundingClientRect().width) };
   });
   check('the guide is the first tab', /راهنما/.test(shell.first), shell.first);
   /* The wordmark is anchored inside an RTL text element, where `start` is the
      right edge; anchored the other way it rendered off the viewBox. */
-  check('the brand mark draws its plate and both lines',
-    shell.parts.length === 3 && shell.parts.every(function (p) {
-      return p.width > 8 && p.left >= 0;
+  check('the brand mark draws its field, its ring and both lines',
+    shell.parts.length === 4 && shell.parts.every(function (p) {
+      return p.width > 5 && p.left >= 0;
     }), JSON.stringify(shell.parts));
-  check('both lines sit inside the plate',
+  check('the mark is on the brand yellow', shell.fill === '#FFCC00', shell.fill);
+  check('everything sits inside the field',
     shell.parts.slice(1).every(function (p) {
-      return p.left >= shell.parts[0].left &&
+      return p.left >= shell.parts[0].left - 1 &&
              p.left + p.width <= shell.parts[0].left + shell.parts[0].width + 1;
     }), JSON.stringify(shell.parts));
 
