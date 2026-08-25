@@ -207,6 +207,57 @@
   }
 
   /**
+   * Column mappings for the questions that exist right now.
+   *
+   * The dictionary in excel-import.js knows q1..q5 — the shape of the original
+   * workbook. But the designer can add questions, and the template writes one
+   * column per question, so a sixth question's answers came back under a
+   * header ("Q6") that no field claimed and were dropped on import.
+   *
+   * Question entries are therefore derived from the live configuration rather
+   * than hard-coded: one appears when a question is added and goes when the
+   * question goes, while any synonyms the administrator typed are kept.
+   */
+  function activeMappings() {
+    var maps = JSON.parse(JSON.stringify(App.state.columnMappings || cloneMappings()));
+    var questions = (App.state.config && App.state.config.questions) || [];
+    var wanted = {};
+
+    questions.forEach(function (q, i) {
+      /* The impact question is not answered in a column of its own: it has
+         «اثرگذاری ویژه» and its amount, which the dictionary already covers. */
+      if (!q || !q.id || q.impact) return;
+      wanted[q.id] = true;
+
+      var digits = String(q.id).match(/\d+/);
+      var n = digits ? digits[0] : String(i + 1);
+      var codes = [q.id, 'q' + n, 'س' + n, 'سوال ' + n, 'سؤال ' + n, 'question ' + n];
+      var entry = maps[q.id];
+      if (!entry) {
+        entry = maps[q.id] = {
+          label: q.domain || ('سؤال ' + n), group: 'questionnaire', synonyms: []
+        };
+      }
+      if (!entry.synonyms) entry.synonyms = [];
+      codes.forEach(function (c) {
+        if (entry.synonyms.indexOf(c) === -1) entry.synonyms.push(c);
+      });
+    });
+
+    /* A question the designer removed must stop claiming a column, or it would
+       swallow the header of the question that took its place. */
+    Object.keys(maps).forEach(function (field) {
+      if (/^q\d+$/.test(field) && !wanted[field]) delete maps[field];
+    });
+    return maps;
+  }
+
+  function mappingLabel(field) {
+    var m = activeMappings()[field];
+    return (m && m.label) || field;
+  }
+
+  /**
    * Bring a stored config forward. Earlier versions listed scored questions as
    * bare ids with no text or weight; rebuild the richer shape from whatever is
    * there so a saved session keeps working after an upgrade.
@@ -1921,7 +1972,7 @@
       chain = chain.then(function () {
         return readFile(f).then(function (buf) {
           var res = Import.parseWorkbook(buf, {
-            fileName: f.name, kind: kind, mappings: App.state.columnMappings
+            fileName: f.name, kind: kind, mappings: activeMappings()
           });
           /* A questionnaire must match the design it was cut from. A signed
              file is checked against the stored signature; an unsigned one
@@ -2021,7 +2072,7 @@
         var sampleRec = p.records[0] || {};
         tb.appendChild(el('tr', {}, [
           el('td', {}, [
-            el('b', { text: (App.state.columnMappings[field] || {}).label || field }),
+            el('b', { text: mappingLabel(field) }),
             el('div', { class: 'small muted mono', text: field })
           ]),
           el('td', { text: String(p.headers[idx] === null || p.headers[idx] === undefined ? '' : p.headers[idx]).slice(0, 60) }),
@@ -2037,6 +2088,20 @@
           text: 'ستون‌های نادیده‌گرفته‌شده: ' + p.unmapped.map(function (u) {
             return String(u.header).slice(0, 30);
           }).join(' • ') }));
+
+        /* An ignored answer column is data thrown away, not a harmless extra:
+           say which question is missing from the design rather than leaving a
+           bare code in a grey line. */
+        var orphanAnswers = p.unmapped.filter(function (u) {
+          return /^\s*q\s*\d+\s*$/i.test(String(u.header || ''));
+        });
+        if (orphanAnswers.length) {
+          det.appendChild(U.alert('warn', 'پاسخ این ستون‌ها وارد نمی‌شود',
+            orphanAnswers.map(function (u) { return String(u.header).trim(); }).join('، ') +
+            ' — سؤالی با این کد در «طراحی پرسشنامه» وجود ندارد. اگر این فایل از ' +
+            'طراحی دیگری گرفته شده، ابتدا همان سؤال را در طراحی اضافه کنید و بعد ' +
+            'فایل را وارد کنید.'));
+        }
       }
       body.appendChild(det);
     });
@@ -2241,7 +2306,7 @@
         el('td', { class: 'mono', text: colLetter(i) }),
         el('td', { text: String(h === null || h === undefined ? '' : h).slice(0, 70) }),
         el('td', {}, [field
-          ? el('span', { class: 'chip ok', text: (App.state.columnMappings[field] || {}).label || field })
+          ? el('span', { class: 'chip ok', text: mappingLabel(field) })
           : el('span', { class: 'chip', text: 'نادیده گرفته شد' })])
       ]));
     });
@@ -4103,8 +4168,12 @@
     mapBody.appendChild(el('p', { class: 'small muted',
       text: 'برای هر فیلد سیستم، عناوینی که هنگام ورود فایل به آن نگاشت می‌شوند. ' +
             'با کاما جدا کنید. افزودن یک املای جدید نیازی به تغییر کد ندارد.' }));
-    Object.keys(App.state.columnMappings).forEach(function (field) {
-      var m = App.state.columnMappings[field];
+    /* Derived, so a question added in the designer shows up here too. Edits
+       are written back to the stored mappings. */
+    var editable = activeMappings();
+    Object.keys(editable).forEach(function (field) {
+      var m = editable[field];
+      App.state.columnMappings[field] = m;
       var inp = el('input', { type: 'text', class: 'editable', style: 'width:100%' });
       inp.value = m.synonyms.join('، ');
       inp.addEventListener('change', function () {
@@ -5034,6 +5103,14 @@
      the modal, the same way `recalc` is exposed for the rest of the suite. */
   /* Test hook: the roster a questionnaire template is built from. */
   window.__templateRoster = function (filter) { return templateRoster(filter); };
+
+  /* Test hook: the column mappings an import would actually run with. */
+  window.__activeMappings = function () { return activeMappings(); };
+
+  /* Test hook: the preview a chosen file opens, without the file dialog. */
+  window.__showImportPreview = function (parsed, errors, kind) {
+    return showImportPreview(parsed, errors || [], kind || 'questionnaire');
+  };
 
   window.__runManagerExport = function (field, label, mode) {
     runManagerExport(field || 'directManager', label || 'مدیر مستقیم', mode || 'sheets');

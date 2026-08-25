@@ -535,6 +535,101 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   check('a template from the current design is accepted',
     mismatch.own.ok === true && mismatch.own.level === 'match', mismatch.own.level);
 
+  /* A question added in the designer must survive the whole round trip. The
+     importer's dictionary used to stop at Q5, so a sixth question's column
+     came back unclaimed and its answers were silently dropped. */
+  var sixth = await page.evaluate(function () {
+    var cfg = window.App.state.config;
+    var before = cfg.questions.map(function (q) { return q.id; });
+    var impactAt = cfg.questions.length - 1;
+    ['q5', 'q6'].forEach(function (id) {
+      if (!cfg.questions.some(function (q) { return q.id === id; })) {
+        cfg.questions.splice(impactAt++, 0,
+          { id: id, text: 'سؤال افزوده', weight: 1, scored: true });
+      }
+    });
+    cfg.questionCount = window.KaranehEngine.scoredQuestions(cfg).length;
+
+    /* Build the template this design produces, fill every answer, read it back
+       through the same path an uploaded file takes. */
+    var roster = window.__templateRoster().slice(0, 3);
+    var wb = window.Templates.buildQuestionnaireTemplate(cfg, roster,
+      { XLSX: window.XLSX, period: window.App.state.period });
+    var sheet = wb.Sheets['پرسشنامه کارانه تیمی'];
+    var aoa = window.XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', blankrows: true });
+    var codeRow = 5;                                  // zero-based: row 6
+    var codes = aoa[codeRow].map(function (c) { return String(c); });
+    var cols = {};
+    codes.forEach(function (c, i) { cols[c] = i; });
+    for (var r = codeRow + 1; r < codeRow + 1 + roster.length; r++) {
+      ['Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6'].forEach(function (code, k) {
+        if (cols[code] !== undefined) aoa[r][cols[code]] = k === 5 ? 'خیلی زیاد' : 'زیاد';
+      });
+    }
+    var filled = window.XLSX.utils.aoa_to_sheet(aoa);
+    wb.Sheets['پرسشنامه کارانه تیمی'] = filled;
+    var bytes = window.XLSX.write(wb, { type: 'array', bookType: 'xlsx', compression: false });
+
+    var res = window.ExcelImport.parseWorkbook(bytes, {
+      fileName: 'six.xlsx', kind: 'questionnaire', mappings: window.__activeMappings()
+    });
+    var rec = res.records[0];
+    var score = window.KaranehEngine.calculatePerformanceScore(rec, cfg);
+
+    cfg.questions = cfg.questions.filter(function (q) {
+      return before.indexOf(q.id) !== -1;
+    });
+    cfg.questionCount = window.KaranehEngine.scoredQuestions(cfg).length;
+    window.App.recalc();
+
+    return {
+      codes: codes.slice(5, 12),
+      unmapped: res.unmapped.map(function (u) { return u.header; }),
+      mappedQ6: res.mapping.q6,
+      answer: rec ? rec.q6 : null,
+      score: score
+    };
+  });
+  check('a sixth question gets its own template column',
+    sixth.codes.indexOf('Q6') !== -1, sixth.codes.join(','));
+  check('its column is claimed on import, not left unmapped',
+    sixth.mappedQ6 !== undefined && sixth.unmapped.length === 0,
+    'q6 → ' + sixth.mappedQ6 + ' | unmapped: ' + sixth.unmapped.join(','));
+  check('its answer arrives in the record', sixth.answer === 'خیلی زیاد',
+    String(sixth.answer));
+  check('the answer counts towards the performance score',
+    sixth.score !== null && sixth.score > 4, String(sixth.score));
+
+  /* And when the design really is missing that question, the preview has to
+     say so — an ignored answer column is data being thrown away. */
+  var orphan = await page.evaluate(function () {
+    var cfg = window.App.state.config;
+    var wider = JSON.parse(JSON.stringify(cfg));
+    wider.questions.splice(wider.questions.length - 1, 0,
+      { id: 'q7', text: 'سؤالی که در طراحی نیست', weight: 1, scored: true });
+    var wb = window.Templates.buildQuestionnaireTemplate(wider,
+      window.__templateRoster().slice(0, 2), { XLSX: window.XLSX });
+    var bytes = window.XLSX.write(wb, { type: 'array', bookType: 'xlsx', compression: false });
+    var res = window.ExcelImport.parseWorkbook(bytes, {
+      fileName: 'orphan.xlsx', kind: 'questionnaire', mappings: window.__activeMappings()
+    });
+    window.__showImportPreview([res], [], 'questionnaire');
+    var txt = document.querySelector('.modal').textContent;
+    return { unmapped: res.unmapped.map(function (u) { return u.header; }),
+             warns: /پاسخ این ستون‌ها وارد نمی‌شود/.test(txt),
+             namesIt: /Q7/.test(txt) };
+  });
+  check('a column for a question the design lacks stays unmapped',
+    orphan.unmapped.indexOf('Q7') !== -1, orphan.unmapped.join(','));
+  check('the preview warns that those answers will be dropped', orphan.warns);
+  check('the warning names the column', orphan.namesIt);
+  await page.evaluate(function () {
+    var btns = Array.prototype.slice.call(document.querySelectorAll('.modal footer button'));
+    var cancel = btns.filter(function (b) { return b.textContent.trim() === 'انصراف'; })[0];
+    if (cancel) cancel.click();
+  });
+  await page.waitForTimeout(200);
+
   console.log('\n== ROLE-BASED ACCESS ==');
   var roleTest = await page.evaluate(function () {
     var divisions = {};
