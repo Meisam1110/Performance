@@ -56,10 +56,65 @@
     { key: 'comment',          label: 'Comment',                  width: 24 },
     { key: 'finalKaraneh',     label: 'Final Karaneh',            width: 20, output: true },
     { key: 'directManager',    label: 'Direct Manager',           width: 20 },
-    { key: 'managerLevel1',    label: 'Manager Level 1',          width: 20 },
-    { key: 'managerLevel2',    label: 'Manager Level 2',          width: 20 },
-    { key: 'managerLevel3',    label: 'Manager Level 3',          width: 20 }
+    { key: 'department',       label: 'Team',                     width: 26 },
+    /* The management chain as the payroll file carries it: each layer named
+       by its job level, each followed by that manager's address. */
+    { key: 'managerL3',        label: '3',                        width: 20 },
+    { key: 'managerL3Email',   label: 'Email3',                   width: 24 },
+    { key: 'managerL3h',       label: '3H',                       width: 20 },
+    { key: 'managerL3hEmail',  label: 'Email 3h',                 width: 24 },
+    { key: 'managerL4',        label: '4',                        width: 20 },
+    { key: 'managerL4Email',   label: 'Email 4',                  width: 24 },
+    { key: 'managerL5',        label: '5',                        width: 20 },
+    { key: 'managerL5Email',   label: 'Email 5',                  width: 24 }
   ];
+
+  /**
+   * The management layers, top of the file's chain last.
+   *
+   * A layer is not a fixed rung: the payroll file already shifts the chain up
+   * for anyone who has no manager at that level, so "-" means the chain ends,
+   * not that a name is missing. `managerFor` below resolves who answers.
+   */
+  var MANAGER_LAYERS = [
+    { key: 'managerL3',  email: 'managerL3Email',  label: 'مدیر سطح ۳' },
+    { key: 'managerL3h', email: 'managerL3hEmail', label: 'مدیر ۳H' },
+    { key: 'managerL4',  email: 'managerL4Email',  label: 'مدیر سطح ۴' },
+    { key: 'managerL5',  email: 'managerL5Email',  label: 'مدیر سطح ۵' }
+  ];
+
+  /** A layer cell that carries no one. The file writes "-" for that. */
+  function blankLayer(v) {
+    var s = String(v === null || v === undefined ? '' : v).trim();
+    return s === '' || s === '-' || s === '—' || s === '_';
+  }
+
+  /**
+   * Who answers for this person at a given layer.
+   *
+   * If the layer itself is empty the higher layer answers, which is how the
+   * organisation works and what the file's "-" means. If nothing higher exists
+   * either — the person is already near the top — the highest real name below
+   * the layer answers, so nobody is left without an owner.
+   */
+  function managerFor(employee, layerIndex) {
+    var i;
+    for (i = layerIndex; i < MANAGER_LAYERS.length; i++) {
+      if (!blankLayer(employee[MANAGER_LAYERS[i].key])) {
+        return { name: String(employee[MANAGER_LAYERS[i].key]).trim(),
+                 email: String(employee[MANAGER_LAYERS[i].email] || '').trim(),
+                 layer: i, exact: i === layerIndex };
+      }
+    }
+    for (i = layerIndex - 1; i >= 0; i--) {
+      if (!blankLayer(employee[MANAGER_LAYERS[i].key])) {
+        return { name: String(employee[MANAGER_LAYERS[i].key]).trim(),
+                 email: String(employee[MANAGER_LAYERS[i].email] || '').trim(),
+                 layer: i, exact: false };
+      }
+    }
+    return null;
+  }
 
   /* ------------------------------------------------------------------------
    * Template signature
@@ -394,6 +449,9 @@
     META_SHEET: META_SHEET,
     QUESTIONNAIRE_SHEET: QUESTIONNAIRE_SHEET,
     PAYROLL_COLUMNS: PAYROLL_COLUMNS,
+    MANAGER_LAYERS: MANAGER_LAYERS,
+    managerFor: managerFor,
+    blankLayer: blankLayer,
     describe: describe,
     signature: signature,
     readMeta: readMeta,

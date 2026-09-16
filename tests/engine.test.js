@@ -26,7 +26,12 @@ var config = {
   minPerformanceThreshold:      sample.config.minPerformanceThreshold,
   gradeImpactFactor:            sample.config.gradeImpactFactor,
   baselineCoefficientPerPerson: sample.config.baselineCoefficientPerPerson,
-  specialImpactAmount:          sample.config.specialImpactAmount
+  specialImpactAmount:          sample.config.specialImpactAmount,
+  /* Merit.xlsb predates the approval step: in the workbook a flagged claim
+     paid out on its own. The approval gate is a later product rule, so it is
+     turned off here — this file measures the engine against Excel, not against
+     the current policy. Approval itself is covered further down. */
+  requireImpactApproval:        false
 };
 
 var COLUMNS = [
@@ -159,6 +164,35 @@ invariant('no employee scoring exactly the threshold is paid',
   result.rows.filter(function (r) { return r.performanceScore === 2 && r.finalKaraneh !== 0; }).length === 0);
 invariant('no negative payout in the reference data', result.totals.negativePayoutCount === 0);
 invariant('budget status is BALANCED', result.totals.budgetStatus === 'BALANCED', result.totals.budgetStatus);
+
+/* ---- impact approval ----------------------------------------------------
+   A claim is worth nothing until someone approves it, and worth its amount
+   once they do. */
+(function () {
+  var claimants = sample.employees.filter(function (e) {
+    return Engine.isSpecialImpact(e);
+  });
+  var approvedCfg = Object.assign({}, config, { requireImpactApproval: true });
+  var withApproval = Engine.calculate(sample.employees.map(function (e) {
+    var c = Object.assign({}, e);
+    if (Engine.isSpecialImpact(e)) c.impactApproved = 'بله';
+    return c;
+  }), approvedCfg);
+  var withoutApproval = Engine.calculate(sample.employees, approvedCfg);
+
+  invariant('an unapproved claim earns nothing',
+    withoutApproval.rows.every(function (r) { return r.specialImpactValue === 0; }));
+  invariant('an unapproved claim is reported as awaiting approval',
+    withoutApproval.rows.filter(function (r) { return r.impactAwaitingApproval; }).length
+      === claimants.length);
+  invariant('approval restores exactly the workbook amounts',
+    withApproval.rows.every(function (r, i) {
+      return Math.abs(r.specialImpactValue - result.rows[i].specialImpactValue) < 1e-9;
+    }));
+  invariant('the budget still reconciles either way',
+    Math.abs(withoutApproval.totals.sumFinalKaraneh - config.budget) < 1e-3 &&
+    Math.abs(withApproval.totals.sumFinalKaraneh - config.budget) < 1e-3);
+}());
 
 /* Gate is configurable: dropping it to zero must pay the blocked employee. */
 var ungated = Engine.calculate(sample.employees,

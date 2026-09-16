@@ -302,7 +302,9 @@
         positionTitle: (master && master.positionTitle) || q.positionTitle || '',
         jobLevel:      (master && master.jobLevel) || q.jobLevel || '',
         specialProject:      q.specialProject,
+        impactApproved:      q.impactApproved,
         specialImpactAmount: q.specialImpactAmount,
+        department:          (master && master.department) || q.department || '',
         hodAdjustment:       q.hodAdjustment,
         hodComment:          q.hodComment,
         excluded:            !!q.excluded,
@@ -1489,15 +1491,11 @@
       rows: rows,
       sortKey: 'finalKaraneh', sortDir: 'desc',
       searchFields: ['employeeId', 'fullName', 'division', 'positionTitle', 'directManager'],
-      facets: [
-        { key: 'division', label: 'همه واحدها' },
-        { key: 'jobLevel', label: 'همه سطوح شغلی' },
+      facets: peopleFacets([
         { key: 'status', label: 'همه وضعیت‌ها' },
-        { key: 'manager', label: 'همه مدیران', value: function (r) { return managerOf(r, 'directManager'); } },
-        { key: 'managerL1', label: 'همه مدیران سطح ۱', value: function (r) { return managerOf(r, 'managerLevel1'); } },
         { key: 'special', label: 'اثرگذاری ویژه',
           value: function (r) { return r.specialImpactValue > 0 ? 'دارد' : (r.specialImpactBlocked ? 'ثبت شده ولی زیر نصاب' : 'ندارد'); } }
-      ],
+      ]),
       rowClass: function (r) {
         if (r.negative) return 'row-err';
         if (!r.eligible) return 'row-warn';
@@ -1556,6 +1554,57 @@
   function managerOf(row, field) {
     var m = employeeById(row.employeeId);
     return (m && m[field]) || '';
+  }
+
+  function fieldOf(row, field) {
+    if (row[field] !== undefined && row[field] !== null && row[field] !== '') return row[field];
+    var m = employeeById(row.employeeId);
+    return (m && m[field]) || '';
+  }
+
+  /** Who answers for this row at a management layer, empty when nobody does. */
+  function layerManager(row, layerIndex) {
+    var m = employeeById(row.employeeId) || row;
+    var found = Tpl.managerFor(m, layerIndex);
+    return found ? found : null;
+  }
+
+  function layerName(row, layerIndex) {
+    var m = layerManager(row, layerIndex);
+    return m ? m.name : '';
+  }
+
+  /**
+   * Every manager above this person, direct manager first.
+   * Used as a single filter: one dropdown that finds a manager wherever they
+   * sit in the chain, instead of one dropdown per layer.
+   */
+  function managerChain(row) {
+    var m = employeeById(row.employeeId) || row;
+    var out = [], seen = {};
+    function add(name) {
+      name = String(name || '').trim();
+      if (!name || Tpl.blankLayer(name) || seen[name]) return;
+      seen[name] = 1; out.push(name);
+    }
+    add(m.directManager);
+    Tpl.MANAGER_LAYERS.forEach(function (l) { add(m[l.key]); });
+    ['managerLevel1', 'managerLevel2', 'managerLevel3'].forEach(function (k) { add(m[k]); });
+    return out;
+  }
+
+  /**
+   * The filters every people table offers. Unit and department come from the
+   * payroll file; the manager filter spans the whole chain, so picking a name
+   * finds their people whichever layer they sit at.
+   */
+  function peopleFacets(extra) {
+    return [
+      { key: 'division', label: 'همه واحدها', value: function (r) { return fieldOf(r, 'division'); } },
+      { key: 'department', label: 'همه دپارتمان‌ها', value: function (r) { return fieldOf(r, 'department'); } },
+      { key: 'jobLevel', label: 'همه سطوح شغلی', value: function (r) { return fieldOf(r, 'jobLevel'); } },
+      { key: 'anyManager', label: 'همه مدیران', value: function (r) { return managerChain(r); } }
+    ].concat(extra || []);
   }
 
   function workflowNode() {
@@ -1662,12 +1711,10 @@
       rows: App.state.employees,
       sortKey: 'employeeId',
       searchFields: ['employeeId', 'fullName', 'firstName', 'lastName', 'division', 'positionTitle', 'directManager'],
-      facets: [
-        { key: 'division', label: 'همه واحدها' },
-        { key: 'jobLevel', label: 'همه سطوح شغلی' },
+      facets: peopleFacets([
         { key: 'employeeStatus', label: 'همه وضعیت‌ها' },
         { key: 'employmentType', label: 'همه انواع استخدام' }
-      ],
+      ]),
       columns: [
         { key: 'employeeId', label: 'شماره پرسنلی', alwaysVisible: true, width: '100px' },
         { key: 'fullName', label: 'نام و نام خانوادگی', width: '160px',
@@ -1676,16 +1723,24 @@
         { key: 'positionTitle', label: 'عنوان شغلی', width: '180px' },
         { key: 'jobLevel', label: 'JL', width: '50px' },
         { key: 'division', label: 'واحد سازمانی' },
-        { key: 'department', label: 'دپارتمان', hidden: true },
+        { key: 'department', label: 'دپارتمان' },
         { key: 'employmentType', label: 'نوع استخدام' },
         { key: 'assignmentType', label: 'نوع همکاری', hidden: true },
         { key: 'workingDays', label: 'روز کارکرد', type: 'int' },
         { key: 'dateOfEmployment', label: 'تاریخ استخدام', hidden: true },
         { key: 'dateOfLeaving', label: 'تاریخ خروج', hidden: true },
         { key: 'directManager', label: 'مدیر مستقیم' },
-        { key: 'managerLevel1', label: 'مدیر سطح ۱', hidden: true },
-        { key: 'managerLevel2', label: 'مدیر سطح ۲', hidden: true },
-        { key: 'managerLevel3', label: 'مدیر سطح ۳', hidden: true },
+        { key: 'managerL3', label: 'مدیر سطح ۳' },
+        { key: 'managerL3Email', label: 'ایمیل مدیر سطح ۳', hidden: true },
+        { key: 'managerL3h', label: 'مدیر ۳H' },
+        { key: 'managerL3hEmail', label: 'ایمیل مدیر ۳H', hidden: true },
+        { key: 'managerL4', label: 'مدیر سطح ۴', hidden: true },
+        { key: 'managerL4Email', label: 'ایمیل مدیر سطح ۴', hidden: true },
+        { key: 'managerL5', label: 'مدیر سطح ۵', hidden: true },
+        { key: 'managerL5Email', label: 'ایمیل مدیر سطح ۵', hidden: true },
+        { key: 'managerLevel1', label: 'مدیر سطح ۱ (قدیمی)', hidden: true },
+        { key: 'managerLevel2', label: 'مدیر سطح ۲ (قدیمی)', hidden: true },
+        { key: 'managerLevel3', label: 'مدیر سطح ۳ (قدیمی)', hidden: true },
         { key: 'nationalId', label: 'کد ملی', hidden: true },
         { key: 'gender', label: 'جنسیت', hidden: true },
         { key: 'hasQ', label: 'پرسشنامه', calculated: true,
@@ -2220,38 +2275,63 @@
     });
   }
 
+  /**
+   * Bring imported answers into the set.
+   *
+   * One employee has one answer sheet. A second file covering the same person
+   * is a correction — a manager re-sending after a fix — so it replaces what is
+   * there instead of landing beside it as a duplicate to be resolved by hand.
+   * The old values go to the audit trail, so a replacement is never silent.
+   */
   function commitQuestionnaires(parsed) {
-    var added = 0;
+    var added = 0, replaced = 0;
+    var byId = {};
+    App.state.questionnaires.forEach(function (r, i) {
+      if (r.employeeId) byId[String(r.employeeId)] = i;
+    });
+
     parsed.forEach(function (p) {
       p.records.forEach(function (r) {
-        r._key = 'q' + (App._keySeq = (App._keySeq || 0) + 1);
-        App.state.questionnaires.push(r);
-        added++;
+        var id = String(r.employeeId || '');
+        var at = id ? byId[id] : undefined;
+        if (at === undefined) {
+          r._key = 'q' + (App._keySeq = (App._keySeq || 0) + 1);
+          App.state.questionnaires.push(r);
+          if (id) byId[id] = App.state.questionnaires.length - 1;
+          added++;
+          return;
+        }
+        var old = App.state.questionnaires[at];
+        /* A decision the head already made is theirs, not the file's. */
+        r._key = old._key;
+        if (r.hodAdjustment === undefined || r.hodAdjustment === null || r.hodAdjustment === '') {
+          r.hodAdjustment = old.hodAdjustment;
+          r.hodComment = old.hodComment;
+        }
+        App.state.questionnaires[at] = r;
+        replaced++;
+        Store.audit(App.state, {
+          entity: 'questionnaire', employeeId: id,
+          employeeName: r.fullName || old.fullName,
+          field: 'answers', oldValue: 'از ' + (old.sourceFile || '—'),
+          newValue: 'از ' + (r.sourceFile || '—'),
+          reason: 'جایگزینی پاسخ‌های قبلی با فایل تازه'
+        });
       });
       recordBatch(p, 'questionnaire', p.records.length);
     });
+
     Store.audit(App.state, {
       entity: 'questionnaire', field: 'import',
-      oldValue: '', newValue: added + ' رکورد',
+      oldValue: '', newValue: added + ' جدید، ' + replaced + ' جایگزین',
       reason: 'ورود ' + parsed.length + ' فایل پرسشنامه'
-    });
-
-    /* Anything appearing twice is parked until the user decides. */
-    var dups = Store.detectQuestionnaireDuplicates(App.state.questionnaires);
-    dups.forEach(function (d) {
-      d.records.forEach(function (r) { if (r.duplicateResolution === undefined) r.excluded = true; });
     });
 
     save().then(function () {
       recalc();
-      if (dups.length) {
-        U.toast(added + ' رکورد وارد شد — ' + dups.length +
-          ' مورد تکراری تا تعیین تکلیف از محاسبات کنار گذاشته شد.', 'warn', 7000);
-        go('import');
-      } else {
-        U.toast(added + ' رکورد پرسشنامه ادغام شد.', 'ok');
-        go('questionnaires');
-      }
+      U.toast(added + ' رکورد جدید وارد شد' +
+        (replaced ? ' و ' + replaced + ' رکورد به‌روزرسانی شد' : '') + '.', 'ok');
+      go('questionnaires');
     });
   }
 
@@ -2458,11 +2538,10 @@
       rows: App.result.rows,
       sortKey: 'employeeId',
       searchFields: ['employeeId', 'fullName', 'division', 'positionTitle'],
-      facets: [
-        { key: 'division', label: 'همه واحدها' },
+      facets: peopleFacets([
         { key: 'sourceFile', label: 'همه فایل‌ها', value: function (r) { return r._input.sourceFile; } },
         { key: 'status', label: 'همه وضعیت‌ها' }
-      ],
+      ]),
       rowClass: function (r) {
         if (r.excluded) return 'row-excluded';
         if (!r.hasQuestionnaire) return 'row-err';
@@ -2485,15 +2564,24 @@
           render: answerCell(q.id)
         };
       })).concat([
+        /* The manager's claim, as it arrived. It is shown, never scored: on
+           its own it adds nothing until it is approved in the next column. */
         { key: 'specialProject',
           label: (cfg.questions.filter(function (q) { return q.impact; })[0] || {}).domain || 'اثرگذاری ویژه',
+          group: 'اثرگذاری ویژه',
+          title: cfg.specialImpactQuestion + '\n\nپاسخ مدیر — به‌خودی‌خود در محاسبه اثری ندارد.',
+          render: function (r) {
+            if (!r.specialImpactClaimed) return el('span', { class: 'muted', text: '—' });
+            return el('span', { class: 'chip', text: 'ادعا شده' });
+          } },
+        { key: 'impactApproved', label: 'تایید اثرگذاری',
           group: 'اثرگذاری ویژه', editable: true,
-          title: cfg.specialImpactQuestion + '\n\nتنها از امتیاز کارانه ' +
-                 cfg.specialImpactMinScore + ' به بالا قابل پاسخ است.',
+          title: 'تا وقتی تایید نشود، اثرگذاری ویژه در محاسبه نمی‌آید و امتیاز آن قابل تغییر نیست.',
           render: function (r) {
             var q = questionnaireByKey(r._input._key);
-            /* The gate is enforced here as well as in the engine, so the
-               control is simply unavailable rather than silently ignored. */
+            if (!r.specialImpactClaimed) return el('span', { class: 'muted', text: '—' });
+            /* Below the karaneh gate an approval could not pay anything, so
+               the reason is shown instead of a control that does nothing. */
             if (!r.specialImpactUnlocked) {
               return el('span', {
                 class: 'locked-note',
@@ -2502,9 +2590,10 @@
               }, [document.createTextNode('🔒 زیر ' + cfg.specialImpactMinScore)]);
             }
             var cb = el('input', { type: 'checkbox' });
-            cb.checked = !!r.specialProject;
+            cb.checked = !!r.impactApproved;
             cb.addEventListener('change', function () {
-              editField(q, 'specialProject', cb.checked ? 'بله' : null, 'تغییر وضعیت اثرگذاری ویژه');
+              editField(q, 'impactApproved', cb.checked ? 'بله' : null,
+                cb.checked ? 'تایید اثرگذاری ویژه' : 'لغو تایید اثرگذاری ویژه');
             });
             return cb;
           } },
@@ -2512,8 +2601,12 @@
           group: 'اثرگذاری ویژه', editable: true,
           render: function (r) {
             var q = questionnaireByKey(r._input._key);
+            if (!r.specialImpactClaimed) return el('span', { class: 'muted', text: '—' });
             if (!r.specialImpactUnlocked) {
-              return el('span', { class: 'muted', text: r.specialProject ? '۰ (اعمال نشد)' : '—' });
+              return el('span', { class: 'muted', text: '۰ (زیر حد نصاب)' });
+            }
+            if (!r.impactApproved) {
+              return el('span', { class: 'chip warn', text: 'در انتظار تایید' });
             }
             /* The scale moves in fixed steps, so this is a list of the
                permitted bands rather than a free number. */
@@ -2527,7 +2620,7 @@
             var cur = q && q.specialImpactAmount
               ? String(Engine.snapToStep(Number(q.specialImpactAmount), cfg)) : '';
             sel.value = cur;
-            sel.disabled = !r.specialProject;
+            sel.disabled = !r.impactApproved;
             sel.addEventListener('change', function () {
               editField(q, 'specialImpactAmount', sel.value === '' ? null : Number(sel.value),
                 'تغییر امتیاز اثرگذاری ویژه');
@@ -2904,11 +2997,9 @@
       rows: App.result.rows.filter(inScopeForRole),
       sortKey: 'finalKaraneh', sortDir: 'desc',
       searchFields: ['employeeId', 'fullName', 'division', 'positionTitle'],
-      facets: [
-        { key: 'division', label: 'همه واحدها' },
-        { key: 'jobLevel', label: 'همه سطوح شغلی' },
+      facets: peopleFacets([
         { key: 'status', label: 'همه وضعیت‌ها' }
-      ],
+      ]),
       rowClass: function (r) {
         if (r.negative) return 'row-err';
         if (r.excluded) return 'row-excluded';
@@ -3021,10 +3112,9 @@
       rows: eligible,
       sortKey: 'initialAllocation', sortDir: 'desc',
       searchFields: ['employeeId', 'fullName', 'division', 'positionTitle'],
-      facets: [
-        { key: 'division', label: 'همه واحدها' },
+      facets: peopleFacets([
         { key: 'adjusted', label: 'همه', value: function (r) { return r.isOverridden ? 'تغییر یافته' : 'بدون تغییر'; } }
-      ],
+      ]),
       rowClass: function (r) {
         if (r.negative) return 'row-err';
         if (r.isOverridden && !r.hodComment) return 'row-err';

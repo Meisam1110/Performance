@@ -322,7 +322,13 @@
           if (want === '' || want === undefined) return;
           var f = (opts.facets || []).filter(function (x) { return x.key === k; })[0];
           var got = f && f.value ? f.value(r) : r[k];
-          if (String(got === undefined || got === null ? '' : got) !== want) ok = false;
+          /* A facet may report several values for one row — every manager in
+             someone's chain, say — and then the row matches any of them. */
+          if (Array.isArray(got)) {
+            if (got.map(String).indexOf(want) === -1) ok = false;
+          } else if (String(got === undefined || got === null ? '' : got) !== want) {
+            ok = false;
+          }
         });
         if (!ok) return false;
         if (!q) return true;
@@ -376,9 +382,11 @@
         var seen = {}, values = [];
         state.rows.forEach(function (r) {
           var v = f.value ? f.value(r) : r[f.key];
-          if (v === null || v === undefined || v === '') return;
-          v = String(v);
-          if (!seen[v]) { seen[v] = 1; values.push(v); }
+          (Array.isArray(v) ? v : [v]).forEach(function (one) {
+            if (one === null || one === undefined || one === '') return;
+            one = String(one);
+            if (!seen[one]) { seen[one] = 1; values.push(one); }
+          });
         });
         values.sort(function (a, b) { return a.localeCompare(b, 'fa'); });
         var current = state.facets[f.key] || '';

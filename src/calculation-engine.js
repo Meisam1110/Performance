@@ -151,6 +151,10 @@
        scoring 105, 120 and 105 all did. */
     specialImpactMinScore: 100,
 
+    /* The impact answer is a claim; it pays only once someone approves it.
+       See `isImpactApproved`. */
+    requireImpactApproval: true,
+
     /* پرسشنامه کارانه تیمی!B5 = A5 × 100 — the coefficient pool is normalised
        so the average employee carries exactly this many coefficient points. */
     baselineCoefficientPerPerson: 100,
@@ -274,6 +278,7 @@
   function specialImpactEntered(record, config) {
     var cfg = mergeConfig(config);
     if (!isSpecialImpact(record)) return 0;
+    if (!isImpactApproved(record, cfg)) return 0;
     var override = record.specialImpactAmount;
     if (!isBlank(override) && num(override) !== 0) return snapToStep(num(override), cfg);
     return snapToStep(num(cfg.specialImpactAmount), cfg);
@@ -301,6 +306,27 @@
     var floor = num(cfg.specialImpactMinScore);
     if (!floor) return true;
     return karanehScore !== null && karanehScore !== undefined && karanehScore >= floor;
+  }
+
+  /**
+   * Has the manager's claim of special impact been approved?
+   *
+   * The claim itself is an answer, not a decision: it is shown but earns
+   * nothing on its own. Someone reviewing the answers has to tick «تایید
+   * اثرگذاری» before the amount counts, and only then may the amount be
+   * changed. Turning `requireImpactApproval` off restores the older behaviour,
+   * where the claim alone was enough.
+   */
+  function isImpactApproved(record, config) {
+    var cfg = mergeConfig(config);
+    if (!cfg.requireImpactApproval) return true;
+    var v = record.impactApproved;
+    if (isBlank(v)) return false;
+    if (v === true) return true;
+    if (v === false) return false;
+    var s = String(v).trim().toLowerCase();
+    return s === 'بله' || s === 'yes' || s === 'y' || s === 'true' || s === '1' ||
+           s === 'تایید' || s === 'تأیید' || s === 'approved';
   }
 
   function isSpecialImpact(record) {
@@ -420,9 +446,15 @@
       row.performanceScore   = calculatePerformanceScore(r, cfg);          // K
       row.performanceKaraneh = calculateKaranehScore(row.performanceScore, cfg); // L
       row.specialImpactUnlocked = isSpecialImpactUnlocked(row.performanceKaraneh, cfg);
+      row.impactApproved     = isImpactApproved(r, cfg);
       row.specialImpactEntered = specialImpactEntered(r, cfg);             // N
       row.specialImpactValue = calculateSpecialImpact(r, cfg, row.performanceKaraneh);
-      row.specialImpactBlocked = row.specialProject && !row.specialImpactUnlocked;
+      row.specialImpactClaimed = isSpecialImpact(r);
+      /* Two different reasons for a claim to pay nothing, kept apart so the
+         interface can say which one applies. */
+      row.impactAwaitingApproval = row.specialImpactClaimed && !row.impactApproved;
+      row.specialImpactBlocked = row.specialImpactClaimed && row.impactApproved &&
+                                 !row.specialImpactUnlocked;
       row.rawCoefficient     = calculateRawCoefficient(row.performanceKaraneh,
                                                        row.specialImpactValue); // O
       row.gradeScore         = getGradeScore(r.jobLevel, cfg);             // F
@@ -691,6 +723,7 @@
     calculateKaranehScore: calculateKaranehScore,
     calculateSpecialImpact: calculateSpecialImpact,
     specialImpactEntered: specialImpactEntered,
+    isImpactApproved: isImpactApproved,
     snapToStep: snapToStep,
     calculateRawCoefficient: calculateRawCoefficient,
     getGradeScore: getGradeScore,

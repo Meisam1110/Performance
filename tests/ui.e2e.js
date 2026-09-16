@@ -474,6 +474,59 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
     window.App.recalc();
   });
 
+  console.log('\n== IMPACT APPROVAL ==');
+  var approval = await page.evaluate(function () {
+    window.App.go('questionnaires');
+    var claimer = window.App.state.questionnaires.filter(function (q) {
+      return q.specialProject && q.impactApproved;
+    })[0];
+    var before = window.App.result.rows.filter(function (r) {
+      return r.employeeId === claimer.employeeId;
+    })[0].specialImpactValue;
+
+    delete claimer.impactApproved;
+    window.App.recalc();
+    var withdrawn = window.App.result.rows.filter(function (r) {
+      return r.employeeId === claimer.employeeId;
+    })[0];
+
+    claimer.impactApproved = 'بله';
+    window.App.recalc();
+    var restored = window.App.result.rows.filter(function (r) {
+      return r.employeeId === claimer.employeeId;
+    })[0];
+
+    return {
+      id: claimer.employeeId,
+      approvedValue: before,
+      unapprovedValue: withdrawn.specialImpactValue,
+      awaiting: withdrawn.impactAwaitingApproval,
+      claimStillShown: withdrawn.specialImpactClaimed,
+      restoredValue: restored.specialImpactValue,
+      total: window.App.result.totals.sumFinalKaraneh
+    };
+  });
+  check('an approved claim carries its amount', approval.approvedValue === 300,
+    String(approval.approvedValue));
+  check('withdrawing approval drops the amount to zero',
+    approval.unapprovedValue === 0, String(approval.unapprovedValue));
+  check('the claim is still shown, just not counted',
+    approval.claimStillShown === true && approval.awaiting === true);
+  check('approving again restores it', approval.restoredValue === 300,
+    String(approval.restoredValue));
+  check('the budget reconciles throughout',
+    Math.abs(approval.total - 100000000000) < 1e-2, approval.total.toFixed(0));
+
+  var approvalUi = await page.evaluate(function () {
+    window.App.go('questionnaires');
+    var heads = Array.prototype.map.call(document.querySelectorAll('table.grid thead th'),
+      function (th) { return th.textContent.trim(); });
+    return { hasColumn: heads.some(function (h) { return h.indexOf('تایید اثرگذاری') !== -1; }),
+             heads: heads.slice(0, 30) };
+  });
+  check('the answers table carries a «تایید اثرگذاری» column', approvalUi.hasColumn,
+    approvalUi.heads.filter(function (h) { return /اثرگذاری/.test(h); }).join(' , '));
+
   console.log('\n== TEMPLATE DOWNLOAD AND RE-IMPORT ==');
   /* Navigate explicitly rather than relying on where the previous block left
      the app — otherwise reordering blocks silently breaks this one. */
