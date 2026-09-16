@@ -51,6 +51,7 @@
       questionnaires: [],           // consolidated questionnaire records
       importBatches: [],            // one entry per uploaded file
       columnMappings: null,         // admin-editable header synonyms
+      teamLimits: {},               // per-team payout band, agreed with its manager
       auditLog: [],
       finalizedAt: null,
       updatedAt: null

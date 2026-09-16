@@ -155,7 +155,8 @@
     hodAdjustment: {
       label: 'تغییرات معاون بخش', group: 'both',
       synonyms: ['تغییرات معاون بخش', 'تغییرات معاون', 'hod adjustment', 'hod override',
-                 'hod adjust', 'مبلغ پیشنهادی معاون']
+                 'hod adjust', 'مبلغ پیشنهادی معاون', 'مبلغ تعیین شده', 'مبلغ نهایی',
+                 'کارانه نهایی', 'final karaneh']
     },
     hodComment: {
       label: 'توضیح معاون بخش', group: 'both',

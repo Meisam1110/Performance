@@ -23,7 +23,7 @@
   var App = {
     state: null,      // persisted user input
     result: null,     // latest engine output — never persisted
-    view: 'dashboard',
+    view: 'workspace',
     grids: {},
     booted: false
   };
@@ -48,11 +48,9 @@
     { id: 'employees',      icon: '👤', label: 'پرسنل' },
     { id: 'import',         icon: '📥', label: 'ورود پاسخ‌ها' },
     { id: 'questionnaires', icon: '📝', label: 'پاسخ‌ها' },
-    { id: 'validation',     icon: '🛡', label: 'اعتبارسنجی' },
     { phase: 2, label: 'محاسبه کارانه و تغییرات معاون بخش' },
-    { id: 'dashboard',      icon: '▦',  label: 'داشبورد' },
-    { id: 'payment',        icon: '💰', label: 'پرداخت کارانه' },
-    { id: 'hod',            icon: '✍️', label: 'تعیین مبلغ', needsPhase1: true },
+    /* One screen, four sections: validation, dashboard, payment, amounts. */
+    { id: 'workspace',      icon: '▦',  label: 'کارانه و پرداخت' },
     { id: 'reports',        icon: '📤', label: 'خروجی' },
     { group: 'سیستم' },
     { id: 'audit',          icon: '🧾', label: 'ردیابی' },
@@ -158,6 +156,7 @@
     var st = freshState();
     st.package = payload.package;
     st.budgetSource = payload.budgetSource || '';
+    st.teamLimits = payload.teamLimits || {};
     st.period = payload.period || st.period;
     /* Full access, exactly like the file it came from: the head designs,
        configures, imports and exports without asking anyone. Only the data is
@@ -426,6 +425,14 @@
 
     res.rows.forEach(function (r) {
       if (r.excluded) return;
+      var breach = teamBandBreaches(r);
+      if (breach) {
+        add('warn', 'TEAM_BAND', 'خارج از کف و سقف تیم',
+            r.employeeId, r.fullName,
+            'دریافتی ' + U.money(breach.value) + ' ' +
+            (breach.kind === 'min' ? 'کمتر از کف ' : 'بیشتر از سقف ') +
+            U.money(breach.bound) + ' تیم ' + teamKeyOf(r) + ' است.');
+      }
       if (!r.hasQuestionnaire) {
         add('err', 'INCOMPLETE_ANSWERS', 'پاسخ سؤالات ناقص یا نامعتبر',
             r.employeeId, r.fullName, describeMissingAnswers(r));
@@ -801,13 +808,32 @@
   App.recalc = recalc;
   App.save = save;
 
+  /**
+   * Open a screen.
+   *
+   * The four screens that became sections keep their old names: asking for
+   * «validation» or «hod» opens the workspace and scrolls to that section, so
+   * every existing link, button and guide step still lands where it means to.
+   */
+  var SECTION_OF = { validation: 1, dashboard: 1, payment: 1, hod: 1 };
+
   function go(view) {
-    if (!canOpen(view)) view = isAdmin() ? 'validation' : 'dashboard';
+    var section = SECTION_OF[view] ? view : null;
+    if (section) view = 'workspace';
+    if (!canOpen(view)) view = 'workspace';
     App.view = view;
     renderNav();
     renderView();
     var m = document.getElementById('main');
     if (m) m.scrollTop = 0;
+    var shell = document.querySelector('.shell');
+    if (shell) shell.scrollTop = 0;
+    if (section) {
+      /* After the sections have been laid out. */
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () { scrollToSection(section); });
+      });
+    }
   }
   App.go = go;
 
@@ -828,7 +854,7 @@
     var keepShell = sameView && shell ? shell.scrollTop : 0;
 
     U.clear(main);
-    var fn = VIEWS[App.view] || VIEWS.dashboard;
+    var fn = VIEWS[App.view] || VIEWS.workspace;
     fn(main);
     App._paintedView = App.view;
 
@@ -849,6 +875,14 @@
      stays in the state — every file is 'admin' — so the scope helpers and the
      stored data of older files keep working unchanged. */
 
+  /** A heading inside the workspace page, rather than a page title. */
+  function sectionHead(title, subtitle, actions) {
+    return el('div', { class: 'view-head section-head' }, [
+      el('div', {}, [el('h2', { text: title }), el('p', { text: subtitle || '' })]),
+      actions ? el('div', { class: 'actions' }, actions) : null
+    ]);
+  }
+
   function head(title, subtitle, actions) {
     return el('div', { class: 'view-head' }, [
       el('div', {}, [el('h1', { text: title }), el('p', { text: subtitle || '' })]),
@@ -861,6 +895,65 @@
   }
 
   var VIEWS = {};
+
+  /**
+   * The four screens that used to stand alone — validation, dashboard,
+   * payment and amount setting — are sections of one page now. They are still
+   * written as separate builders; `VIEWS.workspace` stacks them and the old
+   * view ids scroll to the right section.
+   */
+  var SECTIONS = {};
+
+  var WORKSPACE_SECTIONS = [
+    { id: 'validation', label: 'اعتبارسنجی', icon: '🛡' },
+    { id: 'dashboard',  label: 'داشبورد',    icon: '▦' },
+    { id: 'payment',    label: 'پرداخت کارانه', icon: '💰' },
+    { id: 'hod',        label: 'تعیین مبلغ', icon: '✍️' }
+  ];
+
+  function sectionAnchor(id) { return 'sec-' + id; }
+
+  VIEWS.workspace = function (main) {
+    main.appendChild(head('کارانه — ' + App.state.period,
+      'اعتبارسنجی، داشبورد، پرداخت و تعیین مبلغ در یک صفحه؛ فیلترها و بودجه روی همه اثر می‌گذارند.',
+      [
+        btn('خروجی کارانه', function () { exportPayrollFile(); }, 'primary'),
+        btn('خروجی به تفکیک سطح / مدیر', function () { exportByManager(); }),
+        btn('نهایی‌سازی', function () { finalize(); }, 'ghost')
+      ]));
+
+    /* A jump bar, because the page is long by design. */
+    var bar = el('div', { class: 'secnav' });
+    WORKSPACE_SECTIONS.forEach(function (sec) {
+      bar.appendChild(el('button', {
+        class: 'secnav-item', onclick: function () { scrollToSection(sec.id); }
+      }, [
+        el('span', { class: 'ico', text: sec.icon }),
+        el('span', { text: sec.label }),
+        sec.id === 'validation' && issueCount('err')
+          ? el('span', { class: 'badge err', text: String(issueCount('err')) }) : null
+      ].filter(Boolean)));
+    });
+    main.appendChild(bar);
+
+    WORKSPACE_SECTIONS.forEach(function (sec) {
+      var host = el('section', { class: 'wsection', id: sectionAnchor(sec.id) });
+      SECTIONS[sec.id](host);
+      main.appendChild(host);
+    });
+  };
+
+  function scrollToSection(id) {
+    var node = document.getElementById(sectionAnchor(id));
+    var main = document.getElementById('main');
+    if (!node || !main) return;
+    /* Which element actually scrolls depends on the width — the shell takes
+       over from `main` on narrow screens. */
+    var shell = document.querySelector('.shell');
+    var scroller = main.scrollHeight > main.clientHeight + 4 ? main : (shell || main);
+    scroller.scrollTop += node.getBoundingClientRect().top -
+                          scroller.getBoundingClientRect().top - 8;
+  }
 
   /* ======================================================================
    * VIEW — Questionnaire designer
@@ -1251,18 +1344,16 @@
   /* ======================================================================
    * VIEW — Dashboard
    * ====================================================================*/
-  VIEWS.dashboard = function (main) {
+  SECTIONS.dashboard = function (main) {
     var t = App.result.totals;
     var scoped = dashboardRows();
 
-    main.appendChild(head(
-      'داشبورد — ' + App.state.period,
+    main.appendChild(sectionHead(
+      'داشبورد',
       isAdmin()
-        ? 'دید یک‌نگاهی از کل فرآیند. نمودارها، جدول یکپارچه و فیلترها همگی به یک مجموعه داده متصل‌اند.'
+        ? 'دید یک‌نگاهی از کل فرآیند. نمودارها و شاخص‌ها به همان داده‌ای متصل‌اند که جدول پایین نشان می‌دهد.'
         : 'دید واحدهای تحت مسئولیت شما.',
       [
-        btn('خروجی کارانه', function () { exportPayrollFile(); }, 'primary'),
-        btn('خروجی به تفکیک سطح / مدیر', function () { exportByManager(); }),
         btn('گزارش کامل', function () { go('reports'); }, 'ghost')
       ]));
 
@@ -1386,9 +1477,8 @@
     ]);
     main.appendChild(charts);
 
-    /* ---- unified table with filters ---- */
-    var tableCard = el('div', {});
-    main.appendChild(tableCard);
+    /* No roster table here: the payment section below carries the one table
+       this page needs, with the amount controls on it. */
     main.appendChild(U.card('مسیر فرآیند', workflowNode(), { hint: 'وضعیت هر مرحله' }));
 
     /* Charts need real widths, so draw after the nodes are in the document. */
@@ -1398,8 +1488,6 @@
         division: divisionHost, status: statusHost, statusLegend: statusLegendHost,
         score: scoreHost, level: levelHost
       }, breakdownField);
-      App.grids.unified = unifiedGrid(scoped);
-      tableCard.appendChild(App.grids.unified.node);
     });
   };
 
@@ -2063,7 +2151,9 @@
       chain = chain.then(function () {
         return readFile(f).then(function (buf) {
           var res = Import.parseWorkbook(buf, {
-            fileName: f.name, kind: kind, mappings: activeMappings()
+            fileName: f.name,
+            kind: kind === 'amounts' ? 'employee' : kind,
+            mappings: activeMappings()
           });
           /* A questionnaire must match the design it was cut from. A signed
              file is checked against the stored signature; an unsigned one
@@ -2246,6 +2336,11 @@
           onClick: function () { commitEmployees(parsed, staged, 'overwrite'); }
         });
       }
+    } else if (kind === 'amounts') {
+      buttons.push({
+        label: 'اعمال مبالغ روی ' + totalRecords + ' رکورد', kind: 'primary',
+        onClick: function () { commitAmounts(parsed); }
+      });
     } else {
       buttons.push({
         label: 'ادغام ' + totalRecords + ' رکورد در مجموعه واحد', kind: 'primary',
@@ -2319,6 +2414,57 @@
    * there instead of landing beside it as a duplicate to be resolved by hand.
    * The old values go to the audit trail, so a replacement is never silent.
    */
+  /**
+   * Amounts arriving as a file rather than typed one by one.
+   *
+   * The same sheet the payment screen exports can come back with the figures
+   * filled in: matched on employee number, the amount lands as that person's
+   * set amount and the comment travels with it. Anyone not on the roster is
+   * reported rather than silently skipped.
+   */
+  function commitAmounts(parsed) {
+    var applied = 0, cleared = 0, missing = [], noComment = 0;
+    parsed.forEach(function (p) {
+      p.records.forEach(function (rec) {
+        var id = String(rec.employeeId || '');
+        var row = id ? resultRow(id) : null;
+        if (!row) { if (id) missing.push(id); return; }
+        var q = questionnaireByKey(row._input._key);
+        if (!q) { missing.push(id); return; }
+
+        var raw = rec.hodAdjustment;
+        if (raw === undefined || raw === null || raw === '') raw = rec.finalKaraneh;
+        var value = (raw === undefined || raw === null || raw === '') ? null : Number(raw);
+        if (value !== null && !isFinite(value)) { missing.push(id); return; }
+
+        var comment = String(rec.hodComment || rec.comment || '').trim();
+        if (value !== null && !comment) noComment++;
+        if (String(q.hodAdjustment || '') === String(value === null ? '' : value)) return;
+
+        Store.audit(App.state, {
+          entity: 'hod', employeeId: id, employeeName: row.fullName,
+          field: 'hodAdjustment', oldValue: q.hodAdjustment, newValue: value,
+          reason: 'ورود مبالغ از فایل ' + (p.fileName || '')
+        });
+        q.hodAdjustment = value;
+        q.hodComment = comment || (value === null ? '' : 'ورود از فایل ' + (p.fileName || ''));
+        if (value === null) cleared++; else applied++;
+      });
+      recordBatch(p, 'amounts', p.records.length);
+    });
+
+    save();
+    var check = Engine.validateBudget(recalc());
+    var msg = U.int(applied) + ' مبلغ اعمال شد' +
+      (cleared ? ' و ' + U.int(cleared) + ' مورد پاک شد' : '') + '.';
+    if (missing.length) {
+      msg += ' ' + U.int(missing.length) + ' شمارهٔ پرسنلی در این دوره پیدا نشد: ' +
+             missing.slice(0, 5).join('، ') + (missing.length > 5 ? ' …' : '');
+    }
+    U.toast(msg, missing.length ? 'warn' : 'ok', missing.length ? 9000 : 5000);
+    if (!check.ok) U.toast(check.problems[0].message, 'err', 9000);
+  }
+
   function commitQuestionnaires(parsed) {
     var added = 0, replaced = 0;
     var byId = {};
@@ -2519,6 +2665,9 @@
         ' • اثرگذاری ویژه از امتیاز ' + cfg.specialImpactMinScore + ' به بالا' }),
       el('span', {}, [btn('طراحی پرسشنامه', function () { go('designer'); }, 'sm ghost')])
     ]));
+
+    main.appendChild(U.card('ویرایش گروهی پاسخ‌ها', bulkAnswerPanel(),
+      { hint: 'روی همان ردیف‌هایی اعمال می‌شود که جدول پایین با فیلترهای فعلی نشان می‌دهد' }));
 
     var answerOptions = Object.keys(cfg.answerScale);
 
@@ -2809,6 +2958,104 @@
   }
 
   /**
+   * Change one answer for many people at once.
+   *
+   * The rows it touches are the ones the table is showing, so the filters
+   * above are the selection: filter to a department, pick the question and the
+   * answer, apply. Every write is audited individually, exactly as a typed one
+   * would be, and nothing happens without a reason.
+   */
+  function bulkAnswerPanel() {
+    var cfg = App.state.config;
+    var box = el('div', {});
+
+    var questions = Engine.scoredQuestions(cfg);
+    var fieldSel = el('select', { class: 'editable' },
+      questions.map(function (q, i) {
+        return el('option', { value: q.id, text: (q.domain || Tpl.questionCode(q, i)) });
+      }).concat([
+        el('option', { value: '__impactApproved', text: 'تایید اثرگذاری ویژه' })
+      ]));
+
+    var valueSel = el('select', { class: 'editable' });
+    function refreshValues() {
+      U.clear(valueSel);
+      var opts = fieldSel.value === '__impactApproved'
+        ? [{ v: 'بله', t: 'تایید شود' }, { v: '', t: 'تایید برداشته شود' }]
+        : Object.keys(cfg.answerScale).map(function (a) { return { v: a, t: a }; });
+      opts.forEach(function (o) { valueSel.appendChild(el('option', { value: o.v, text: o.t })); });
+    }
+    fieldSel.addEventListener('change', refreshValues);
+    refreshValues();
+
+    var onlyBlank = el('input', { type: 'checkbox' });
+    onlyBlank.checked = true;
+
+    var count = el('span', { class: 'small muted' });
+    function targets() {
+      var grid = App.grids.questionnaires;
+      var rows = grid ? grid.getVisibleRows() : App.result.rows;
+      if (fieldSel.value === '__impactApproved') {
+        return rows.filter(function (r) { return r.specialImpactClaimed; });
+      }
+      if (!onlyBlank.checked) return rows;
+      var id = fieldSel.value;
+      return rows.filter(function (r) {
+        var v = r._input ? r._input[id] : undefined;
+        return v === undefined || v === null || v === '';
+      });
+    }
+    function refreshCount() {
+      count.textContent = U.int(targets().length) + ' ردیف هدف این تغییر است.';
+    }
+    onlyBlank.addEventListener('change', refreshCount);
+    fieldSel.addEventListener('change', refreshCount);
+
+    box.appendChild(el('div', { class: 'form-grid' }, [
+      el('label', { class: 'field' }, [el('span', { text: 'کدام ستون' }), fieldSel]),
+      el('label', { class: 'field' }, [el('span', { text: 'چه مقداری' }), valueSel])
+    ]));
+    box.appendChild(el('label', { class: 'checkline' }, [onlyBlank,
+      el('span', { text: 'فقط ردیف‌هایی که این ستون در آن‌ها خالی است' })]));
+    box.appendChild(el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, [
+      btn('اعمال روی ردیف‌های فیلترشده', function () {
+        applyBulkAnswers(fieldSel.value, valueSel.value, targets());
+      }, 'primary'),
+      count
+    ]));
+    refreshCount();
+    return box;
+  }
+
+  function applyBulkAnswers(field, value, rows) {
+    if (!rows.length) { U.toast('ردیفی برای تغییر وجود ندارد.', 'warn'); return; }
+    var isApproval = field === '__impactApproved';
+    var realField = isApproval ? 'impactApproved' : field;
+    var newValue = value === '' ? null : value;
+
+    U.confirm(U.int(rows.length) + ' ردیف تغییر کند؟', { confirmLabel: 'اعمال' })
+      .then(function (ok) {
+        if (!ok) return;
+        var changed = 0;
+        rows.forEach(function (r) {
+          var q = questionnaireByKey(r._input._key);
+          if (!q) return;
+          if (String(q[realField] || '') === String(newValue || '')) return;
+          Store.audit(App.state, {
+            entity: 'questionnaire', employeeId: r.employeeId, employeeName: r.fullName,
+            field: realField, oldValue: q[realField], newValue: newValue,
+            reason: 'ویرایش گروهی'
+          });
+          q[realField] = newValue;
+          changed++;
+        });
+        save();
+        recalc();
+        U.toast(U.int(changed) + ' ردیف تغییر کرد.', 'ok');
+      });
+  }
+
+  /**
    * Budget and the parameters that shape it, on the payment screen.
    *
    * These used to live in Settings, which a division head cannot open. They
@@ -2980,14 +3227,11 @@
   /* ======================================================================
    * VIEW — روش پرداخت کارانه
    * ====================================================================*/
-  VIEWS.payment = function (main) {
+  SECTIONS.payment = function (main) {
     var t = App.result.totals;
-    main.appendChild(head('روش پرداخت کارانه',
-      'معادل شیت «روش پرداخت کارانه» فایل مرجع.',
-      [
-        btn('خروجی', function () { exportSheet('payment'); }),
-        btn('تنظیم بودجه', function () { go('settings'); })
-      ]));
+    main.appendChild(sectionHead('پرداخت کارانه',
+      'معادل شیت «روش پرداخت کارانه» فایل مرجع. بودجه را همین‌جا وارد کنید.',
+      [ btn('خروجی', function () { exportSheet('payment'); }) ]));
 
     if (!App.result.rows.length) {
       main.appendChild(el('div', { class: 'empty' }, [
@@ -3101,18 +3345,18 @@
   /* ======================================================================
    * VIEW — HOD adjustments
    * ====================================================================*/
-  VIEWS.hod = function (main) {
+  SECTIONS.hod = function (main) {
     var t = App.result.totals;
     if (!phase1Ready()) {
-      main.appendChild(head('تغییرات معاون بخش', ''));
-      main.appendChild(U.alert('err', 'این مرحله هنوز باز نشده است',
+      main.appendChild(sectionHead('تعیین مبلغ', ''));
+      main.appendChild(U.alert('err', 'این بخش هنوز باز نشده است',
         phase1Blockers().length + ' مورد در مرحلهٔ ۱ باز است. تعیین مبلغ روی داده‌های ناقص ' +
-        'می‌تواند سهم سایر افراد را جابه‌جا کند، بنابراین تا رفع آن‌ها این صفحه قفل است.',
-        btn('مشاهده موارد', function () { go('validation'); }, 'sm')));
+        'می‌تواند سهم سایر افراد را جابه‌جا کند، بنابراین تا رفع آن‌ها این بخش قفل است.',
+        btn('مشاهده موارد', function () { scrollToSection('validation'); }, 'sm')));
       return;
     }
-    main.appendChild(head('تغییرات معاون بخش',
-      'تعیین مبلغ نهایی هر فرد. ثبت توضیح اجباری است و اختلاف بین سایرین سرشکن می‌شود.'));
+    main.appendChild(sectionHead('تعیین مبلغ',
+      'مبلغ نهایی هر فرد. ثبت توضیح اجباری است و اختلاف بین سایرین سرشکن می‌شود.'));
 
     var overridden = App.result.rows.filter(function (r) { return r.isOverridden; });
     var sumOverride = 0;
@@ -3129,6 +3373,11 @@
       U.int(overridden.filter(function (r) { return !r.hodComment; }).length),
       { kind: overridden.some(function (r) { return !r.hodComment; }) ? 'err' : 'ok' }));
     main.appendChild(strip);
+
+    main.appendChild(U.card('تعیین گروهی مبلغ', bulkAmountPanel(),
+      { hint: 'برای یک دپارتمان، یک مدیر، یک سطح شغلی یا هر گروه دیگری، یک‌جا مبلغ تعیین کنید' }));
+    main.appendChild(U.card('کف و سقف دریافتی هر تیم', teamLimitPanel(),
+      { hint: 'بازه‌ای که با مدیر همان تیم توافق می‌شود' }));
 
     if (t.negativePayoutCount) {
       main.appendChild(U.alert('err', 'تغییرات فعلی سهم سایر افراد را منفی کرده است',
@@ -3319,6 +3568,366 @@
     var check = Engine.validateBudget(recalc());
     if (!check.ok) U.toast(check.problems[0].message, 'err', 7000);
     else U.toast('مبلغ ثبت شد و محاسبات بازمحاسبه شد.', 'ok');
+  }
+
+  /* ======================================================================
+   * Bulk amount setting
+   *
+   * Setting three hundred amounts one modal at a time is not a workflow. The
+   * head picks a group — a department, a manager's people, a job level, or
+   * simply whatever the table is filtered to — chooses how the amount is
+   * derived, sees what it would do to the pot before committing, and applies
+   * it in one write with one reason recorded against every person.
+   * ====================================================================*/
+  var BULK_TARGETS = [
+    { key: '__filtered', label: 'همان افرادی که جدول پایین نشان می‌دهد' },
+    { key: 'department', label: 'دپارتمان' },
+    { key: 'division',   label: 'واحد سازمانی' },
+    { key: 'jobLevel',   label: 'سطح شغلی' },
+    { key: '__manager',  label: 'مدیر (هر لایه)' }
+  ];
+
+  var BULK_MODES = [
+    { key: 'fixed',   label: 'مبلغ ثابت برای هر نفر' },
+    { key: 'percent', label: 'درصدی از دریافتی محاسباتی هر نفر' },
+    { key: 'pool',    label: 'یک مبلغ کل، به نسبت امتیاز هر نفر' },
+    { key: 'clear',   label: 'حذف مبلغ‌های تعیین‌شده (بازگشت به محاسبه)' }
+  ];
+
+  function bulkTargetRows(field, value) {
+    var rows = App.result.rows.filter(function (r) {
+      return r.inScope && r.eligible && inScopeForRole(r);
+    });
+    if (field === '__filtered') {
+      var grid = App.grids.payment;
+      if (!grid) return rows;
+      var visible = {};
+      grid.getVisibleRows().forEach(function (r) { visible[r.employeeId] = 1; });
+      return rows.filter(function (r) { return visible[r.employeeId]; });
+    }
+    if (!value) return [];
+    if (field === '__manager') {
+      return rows.filter(function (r) { return managerChain(r).indexOf(value) !== -1; });
+    }
+    return rows.filter(function (r) { return String(fieldOf(r, field)) === value; });
+  }
+
+  function bulkTargetValues(field) {
+    if (field === '__filtered') return [];
+    var seen = {}, out = [];
+    App.result.rows.forEach(function (r) {
+      if (!r.inScope || !inScopeForRole(r)) return;
+      var vals = field === '__manager' ? managerChain(r) : [fieldOf(r, field)];
+      vals.forEach(function (v) {
+        v = String(v || '');
+        if (!v || seen[v]) return;
+        seen[v] = 1; out.push(v);
+      });
+    });
+    return out.sort(function (a, b) { return a.localeCompare(b, 'fa'); });
+  }
+
+  /** What each person in the group would be set to, before it is committed. */
+  function bulkPlan(rows, mode, amount) {
+    var plan = [];
+    if (mode === 'clear') {
+      rows.forEach(function (r) { plan.push({ row: r, value: null }); });
+      return plan;
+    }
+    if (mode === 'pool') {
+      var pool = Number(amount) || 0;
+      var scoreSum = rows.reduce(function (a, r) { return a + (r.totalScore || 0); }, 0);
+      rows.forEach(function (r) {
+        plan.push({ row: r, value: scoreSum ? pool * (r.totalScore || 0) / scoreSum : 0 });
+      });
+      return plan;
+    }
+    rows.forEach(function (r) {
+      var v = mode === 'percent'
+        ? (r.initialAllocation || 0) * (Number(amount) || 0) / 100
+        : Number(amount) || 0;
+      plan.push({ row: r, value: v });
+    });
+    return plan;
+  }
+
+  /* ======================================================================
+   * Per-team floor and ceiling
+   *
+   * A band agreed with the team's own manager: nobody in this team below X,
+   * nobody above Y. It is a guard rail, not an extra term in the formula —
+   * clamping payouts silently would break the one invariant the whole system
+   * rests on, that the total equals the budget. So the band is checked, anyone
+   * outside it is named, and bringing them inside is one click that writes
+   * ordinary set amounts, which do reconcile.
+   * ====================================================================*/
+  function teamLimits() {
+    App.state.teamLimits = App.state.teamLimits || {};
+    return App.state.teamLimits;
+  }
+
+  function teamKeyOf(row) { return String(fieldOf(row, 'department') || ''); }
+
+  /** The manager answering for a team, taken from the first layer that has one. */
+  function teamManager(rows) {
+    for (var i = 0; i < rows.length; i++) {
+      var m = layerManager(rows[i], 0);
+      if (m && m.name) return m;
+    }
+    return null;
+  }
+
+  function teamBandBreaches(row) {
+    var band = teamLimits()[teamKeyOf(row)];
+    if (!band || !row.inScope || !row.eligible) return null;
+    var v = row.finalKaraneh || 0;
+    if (band.min && v < band.min) return { kind: 'min', bound: band.min, value: v };
+    if (band.max && v > band.max) return { kind: 'max', bound: band.max, value: v };
+    return null;
+  }
+
+  function teamLimitPanel() {
+    var box = el('div', {});
+    var groups = {};
+    App.result.rows.forEach(function (r) {
+      if (!r.inScope || !inScopeForRole(r)) return;
+      var k = teamKeyOf(r);
+      if (!k) return;
+      (groups[k] = groups[k] || []).push(r);
+    });
+    var names = Object.keys(groups).sort(function (a, b) { return a.localeCompare(b, 'fa'); });
+
+    if (!names.length) {
+      box.appendChild(el('div', { class: 'small muted',
+        text: 'ستون دپارتمان در فایل پرسنل خالی است، بنابراین تیمی برای تعیین سقف و کف وجود ندارد.' }));
+      return box;
+    }
+
+    var tbl = el('table', { class: 'grid' });
+    tbl.appendChild(el('thead', {}, [el('tr', {}, [
+      el('th', { text: 'تیم (دپارتمان)' }),
+      el('th', { text: 'مدیر تیم' }),
+      el('th', { text: 'نفرات' }),
+      el('th', { text: 'کمترین دریافتی فعلی' }),
+      el('th', { text: 'بیشترین دریافتی فعلی' }),
+      el('th', { text: 'کف (ریال)' }),
+      el('th', { text: 'سقف (ریال)' }),
+      el('th', { text: 'خارج از بازه' })
+    ])]));
+    var tb = el('tbody');
+
+    names.forEach(function (name) {
+      var rows = groups[name];
+      var paid = rows.filter(function (r) { return r.eligible; })
+        .map(function (r) { return r.finalKaraneh || 0; });
+      var lo = paid.length ? Math.min.apply(null, paid) : 0;
+      var hi = paid.length ? Math.max.apply(null, paid) : 0;
+      var band = teamLimits()[name] || {};
+      var mgr = teamManager(rows);
+
+      var minInput = U.moneyInput({ style: 'width:130px', value: band.min || '' });
+      var maxInput = U.moneyInput({ style: 'width:130px', value: band.max || '' });
+      function store() {
+        var limits = teamLimits();
+        var next = { min: minInput.getNumber(), max: maxInput.getNumber(),
+                     manager: mgr ? mgr.name : '' };
+        var old = limits[name] || {};
+        if (old.min === next.min && old.max === next.max) return;
+        limits[name] = next;
+        Store.audit(App.state, {
+          entity: 'config', field: 'teamLimit.' + name,
+          oldValue: (old.min || '—') + ' تا ' + (old.max || '—'),
+          newValue: (next.min || '—') + ' تا ' + (next.max || '—'),
+          reason: 'تعیین کف و سقف تیم' + (mgr ? ' با ' + mgr.name : '')
+        });
+        save();
+        renderView();
+      }
+      minInput.addEventListener('change', store);
+      maxInput.addEventListener('change', store);
+
+      var out = rows.filter(function (r) { return teamBandBreaches(r); });
+      tb.appendChild(el('tr', {}, [
+        el('td', {}, [el('b', { text: name })]),
+        el('td', { text: mgr ? mgr.name : '—' }),
+        el('td', { class: 'num', text: U.int(rows.length) }),
+        el('td', { class: 'num' }, [U.bidi(U.money(lo))]),
+        el('td', { class: 'num' }, [U.bidi(U.money(hi))]),
+        el('td', {}, [minInput]),
+        el('td', {}, [maxInput]),
+        el('td', {}, out.length
+          ? [el('span', { class: 'chip err', text: U.int(out.length) + ' نفر' }),
+             btn('اصلاح', function () { pullTeamIntoBand(name); }, 'sm')]
+          : [el('span', { class: 'chip ok', text: '—' })])
+      ]));
+    });
+    tbl.appendChild(tb);
+    box.appendChild(el('div', { class: 'table-wrap', style: 'max-height:320px' }, [tbl]));
+    box.appendChild(el('div', { class: 'small muted', style: 'margin-top:8px',
+      text: 'کف و سقف، محاسبه را تغییر نمی‌دهد؛ افراد خارج از بازه را نشان می‌دهد و با دکمهٔ ' +
+            '«اصلاح» مبلغ آن‌ها روی مرز بازه تعیین می‌شود — مثل هر مبلغ دستی دیگر، سهم بقیه ' +
+            'سرشکن می‌شود و جمع کل برابر بودجه می‌ماند.' }));
+    return box;
+  }
+
+  function pullTeamIntoBand(team) {
+    var rows = App.result.rows.filter(function (r) {
+      return teamKeyOf(r) === team && teamBandBreaches(r);
+    });
+    if (!rows.length) return;
+    U.confirm('مبلغ ' + U.int(rows.length) + ' نفر روی مرز بازهٔ تیم «' + team + '» تعیین شود؟',
+      { confirmLabel: 'اصلاح' }).then(function (ok) {
+      if (!ok) return;
+      var changed = 0;
+      rows.forEach(function (r) {
+        var breach = teamBandBreaches(r);
+        var q = questionnaireByKey(r._input._key);
+        if (!breach || !q) return;
+        Store.audit(App.state, {
+          entity: 'hod', employeeId: r.employeeId, employeeName: r.fullName,
+          field: 'hodAdjustment', oldValue: q.hodAdjustment, newValue: Math.round(breach.bound),
+          reason: 'اعمال ' + (breach.kind === 'min' ? 'کف' : 'سقف') + ' تیم ' + team
+        });
+        q.hodAdjustment = Math.round(breach.bound);
+        q.hodComment = (breach.kind === 'min' ? 'کف' : 'سقف') + ' تعیین‌شدهٔ تیم ' + team;
+        changed++;
+      });
+      save();
+      var check = Engine.validateBudget(recalc());
+      if (!check.ok) U.toast(check.problems[0].message, 'err', 8000);
+      else U.toast(U.int(changed) + ' مبلغ روی مرز بازه تعیین شد.', 'ok');
+    });
+  }
+
+  function bulkAmountPanel() {
+    var box = el('div', {});
+    var state = { field: '__filtered', value: '', mode: 'fixed', amount: null };
+
+    var targetSel = el('select', { class: 'editable' }, BULK_TARGETS.map(function (t) {
+      return el('option', { value: t.key, text: t.label });
+    }));
+    var valueSel = el('select', { class: 'editable' });
+    var modeSel = el('select', { class: 'editable' }, BULK_MODES.map(function (m) {
+      return el('option', { value: m.key, text: m.label });
+    }));
+    var amountInput = U.moneyInput({ style: 'width:100%' });
+    var reason = el('input', { type: 'text', class: 'editable', style: 'width:100%',
+      placeholder: 'دلیل این تغییر گروهی — الزامی' });
+    var preview = el('div', { class: 'small', style: 'margin:10px 0' });
+
+    function refreshValues() {
+      U.clear(valueSel);
+      var values = bulkTargetValues(state.field);
+      if (!values.length) {
+        valueSel.appendChild(el('option', { value: '', text: '—' }));
+        valueSel.disabled = true;
+      } else {
+        valueSel.disabled = false;
+        valueSel.appendChild(el('option', { value: '', text: 'انتخاب کنید…' }));
+        values.forEach(function (v) { valueSel.appendChild(el('option', { value: v, text: v })); });
+      }
+      state.value = '';
+    }
+
+    function renderPreview() {
+      U.clear(preview);
+      var rows = bulkTargetRows(state.field, state.value);
+      if (!rows.length) {
+        preview.appendChild(el('span', { class: 'muted', text: 'هنوز گروهی انتخاب نشده است.' }));
+        return;
+      }
+      var plan = bulkPlan(rows, state.mode, state.amount);
+      var before = 0, after = 0;
+      plan.forEach(function (p) {
+        before += p.row.finalKaraneh || 0;
+        after += p.value === null ? (p.row.initialAllocation || 0) : p.value;
+      });
+      preview.appendChild(el('div', {}, [
+        el('b', { text: U.int(rows.length) + ' نفر' }),
+        document.createTextNode('  •  مجموع فعلی: '),
+        U.bidi(U.money(before)),
+        document.createTextNode('  →  پس از اعمال: '),
+        el('b', {}, [U.bidi(U.money(after))])
+      ]));
+      var delta = after - before;
+      preview.appendChild(el('div', { class: 'muted', style: 'margin-top:3px' }, [
+        document.createTextNode(delta >= 0
+          ? 'این مبلغ از سهم سایر افراد کم می‌شود: '
+          : 'این مقدار به سهم سایر افراد اضافه می‌شود: '),
+        U.bidi(U.money(Math.abs(delta)))
+      ]));
+    }
+
+    targetSel.addEventListener('change', function () {
+      state.field = targetSel.value; refreshValues(); renderPreview();
+    });
+    valueSel.addEventListener('change', function () { state.value = valueSel.value; renderPreview(); });
+    modeSel.addEventListener('change', function () {
+      state.mode = modeSel.value;
+      amountInput.disabled = state.mode === 'clear';
+      renderPreview();
+    });
+    amountInput.addEventListener('input', function () {
+      state.amount = amountInput.getNumber(); renderPreview();
+    });
+
+    box.appendChild(el('div', { class: 'form-grid' }, [
+      el('label', { class: 'field' }, [el('span', { text: 'گروه بر اساس' }), targetSel]),
+      el('label', { class: 'field' }, [el('span', { text: 'مقدار گروه' }), valueSel]),
+      el('label', { class: 'field' }, [el('span', { text: 'نحوهٔ تعیین' }), modeSel]),
+      el('label', { class: 'field' }, [
+        el('span', { text: 'عدد (ریال یا درصد)' }), amountInput
+      ])
+    ]));
+    box.appendChild(el('label', { class: 'field' }, [el('span', { text: 'دلیل' }), reason]));
+    box.appendChild(preview);
+    box.appendChild(el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, [
+      btn('اعمال روی گروه', function () {
+        applyBulkAmounts(state, reason.value.trim());
+      }, 'primary'),
+      btn('ورود مبالغ از فایل Excel', function () { pickFiles('amounts'); })
+    ]));
+
+    refreshValues();
+    renderPreview();
+    return box;
+  }
+
+  function applyBulkAmounts(state, reason) {
+    var rows = bulkTargetRows(state.field, state.value);
+    if (!rows.length) { U.toast('گروهی برای اعمال انتخاب نشده است.', 'err'); return; }
+    if (!reason) { U.toast('ثبت دلیل برای تغییر گروهی اجباری است.', 'err', 5000); return; }
+    if (state.mode !== 'clear' && !(Number(state.amount) > 0)) {
+      U.toast('عدد را وارد کنید.', 'err'); return;
+    }
+
+    var plan = bulkPlan(rows, state.mode, state.amount);
+    U.confirm('مبلغ ' + U.int(plan.length) + ' نفر تغییر کند؟ این کار سهم سایر افراد را جابه‌جا می‌کند.',
+      { confirmLabel: 'اعمال' }).then(function (ok) {
+      if (!ok) return;
+      var changed = 0;
+      plan.forEach(function (p) {
+        var q = questionnaireByKey(p.row._input._key);
+        if (!q) return;
+        var value = p.value === null ? null : Math.round(p.value);
+        if (String(q.hodAdjustment || '') === String(value === null ? '' : value)) return;
+        Store.audit(App.state, {
+          entity: 'hod', employeeId: p.row.employeeId, employeeName: p.row.fullName,
+          field: 'hodAdjustment', oldValue: q.hodAdjustment, newValue: value,
+          reason: 'تغییر گروهی: ' + reason
+        });
+        q.hodAdjustment = value;
+        q.hodComment = value === null ? '' : reason;
+        changed++;
+      });
+      save();
+      var check = Engine.validateBudget(recalc());
+      if (!check.ok) {
+        U.toast(check.problems[0].message, 'err', 8000);
+      } else {
+        U.toast(U.int(changed) + ' مبلغ به‌صورت گروهی ثبت شد.', 'ok', 5000);
+      }
+    });
   }
 
   function clearHod(employeeId) {
@@ -3517,13 +4126,10 @@
   /* ======================================================================
    * VIEW — Validation center
    * ====================================================================*/
-  VIEWS.validation = function (main) {
-    main.appendChild(head('مرکز اعتبارسنجی',
+  SECTIONS.validation = function (main) {
+    main.appendChild(sectionHead('اعتبارسنجی',
       'تمام مواردی که باید پیش از نهایی‌سازی بررسی یا برطرف شوند.',
-      [
-        btn('خروجی گزارش', function () { exportSheet('validation'); }),
-        btn('نهایی‌سازی', function () { finalize(); }, 'primary')
-      ]));
+      [ btn('خروجی گزارش', function () { exportSheet('validation'); }) ]));
 
     var issues = App.validation || [];
     var byCode = {};
@@ -5262,7 +5868,9 @@
 
   /** Export exactly what the dashboard table is currently showing. */
   function exportCurrentView() {
-    var grid = App.grids.unified;
+    /* The workspace has one roster table — the payment one — and that is what
+       "the current view" means now. */
+    var grid = App.grids.payment;
     var rows = grid ? grid.getVisibleRows() : dashboardRows();
     if (!rows.length) { U.toast('ردیفی برای خروجی وجود ندارد.', 'warn'); return; }
     var byId = {};
@@ -5398,6 +6006,7 @@
       theme: App.state.theme || 'light',
       scope: scope || slice.divisions,
       config: config,
+      teamLimits: JSON.parse(JSON.stringify(App.state.teamLimits || {})),
       budgetSource: share > 0 ? 'سهم این گروه از تخصیص منابع انسانی' : '',
       columnMappings: JSON.parse(JSON.stringify(App.state.columnMappings)),
       mail: JSON.parse(JSON.stringify(App.state.mail || {})),

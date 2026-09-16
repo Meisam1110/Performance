@@ -48,7 +48,7 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
     sepCount + ' separators');
   check('navigation sits in a horizontal bar',
     await page.locator('.navbar .navitem').count() > 0);
-  check('all navigation entries render for the admin role', navCount === 12, navCount + ' items');
+  check('all navigation entries render for the admin role', navCount === 9, navCount + ' items');
   var themed = await page.evaluate(function () {
     var before = document.documentElement.getAttribute('data-theme');
     document.getElementById('themeBtn').click();
@@ -315,7 +315,8 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   await page.evaluate(function () { window.App.go('validation'); });
   await page.waitForSelector('.kpi');
   var vText = await page.locator('#main').textContent();
-  check('validation center renders', vText.indexOf('مرکز اعتبارسنجی') !== -1);
+  check('the validation section renders on the workspace page',
+    vText.indexOf('اعتبارسنجی') !== -1 && vText.indexOf('پرداخت کارانه') !== -1);
   var belowThreshold = await page.evaluate(function () {
     return window.App.validation.filter(function (i) { return i.code === 'BELOW_THRESHOLD'; }).length;
   });
@@ -1051,9 +1052,10 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   await page.evaluate(function () { window.App.go('payment'); });
   await page.waitForSelector('#main table.grid');
   var payScreen = await page.evaluate(function () {
-    var cards = Array.prototype.map.call(document.querySelectorAll('#main .card > h2'),
+    var cards = Array.prototype.map.call(
+      document.querySelectorAll('#sec-payment .card > h2'),
       function (h) { return h.textContent.trim(); });
-    var budgetInput = document.querySelector('#main input.num');
+    var budgetInput = document.querySelector('#sec-payment input.num');
     return { cards: cards, hasBudgetInput: !!budgetInput,
              shown: budgetInput ? budgetInput.value : '' };
   });
@@ -1068,7 +1070,7 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   /* Labels of different lengths must not stagger the controls beside them. */
   var rowAlign = await page.evaluate(function () {
     var tops = Array.prototype.map.call(
-      document.querySelectorAll('#main .card .form-grid > label.field input'),
+      document.querySelectorAll('#sec-payment .card .form-grid > label.field input'),
       function (i) { return Math.round(i.getBoundingClientRect().top); });
     return { tops: tops, spread: tops.length ? Math.max.apply(null, tops) - Math.min.apply(null, tops) : 0 };
   });
@@ -1077,7 +1079,7 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
 
   var liveBudget = await page.evaluate(function () {
     function setBudget(v) {
-      var input = document.querySelector('#main input.num');
+      var input = document.querySelector('#sec-payment input.num');
       input.value = v;
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -1095,10 +1097,11 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
     Math.abs(liveBudget.restored - 100000000000) < 1e-2, liveBudget.restored.toFixed(0));
 
   var levelReport = await page.evaluate(function () {
-    var rows = document.querySelectorAll('#main table.grid tbody tr');
+    var rows = document.querySelectorAll('#sec-payment table.grid tbody tr');
     var first = rows[0] ? Array.prototype.map.call(rows[0].children,
       function (td) { return td.textContent.trim(); }) : [];
-    return { rows: rows.length, first: first, chart: document.querySelectorAll('#main .chart svg').length };
+    return { rows: rows.length, first: first,
+             chart: document.querySelectorAll('#sec-payment .chart svg').length };
   });
   check('the level report lists a row per job level', levelReport.rows > 3,
     levelReport.rows + ' rows');
@@ -1106,6 +1109,164 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
     levelReport.first.length === 10, levelReport.first.slice(0, 6).join(' | '));
   check('the level report is drawn as a chart too', levelReport.chart >= 1,
     levelReport.chart + ' charts');
+
+  console.log('\n== BULK EDITING ==');
+  /* Departments and a manager chain, as the payroll file carries them. */
+  await page.evaluate(function () {
+    /* Remember the overrides already in play, to put back afterwards. */
+    window.__savedOverrides = window.App.state.questionnaires.map(function (q) {
+      return { id: q.employeeId, amount: q.hodAdjustment, note: q.hodComment };
+    });
+    window.App.state.employees.forEach(function (e, i) {
+      e.department = 'تیم ' + (i % 4 + 1);
+      e.managerL3 = 'مدیر ' + (i % 3 + 1);
+      e.managerL3Email = 'm' + (i % 3 + 1) + '@example.com';
+      e.managerL3h = 'معاون ' + (i % 2 + 1);
+      e.managerL5 = '-';
+    });
+    window.App._empIndexStamp = -1;
+    window.App.recalc();
+    window.App.go('hod');
+  });
+  await page.waitForSelector('#sec-hod .card');
+
+  var bulkAmounts = await page.evaluate(function () {
+    var card = Array.prototype.slice.call(document.querySelectorAll('#sec-hod .card'))
+      .filter(function (c) { return /تعیین گروهی مبلغ/.test(c.textContent); })[0];
+    var sels = card.querySelectorAll('select');
+    sels[0].value = 'department';
+    sels[0].dispatchEvent(new Event('change', { bubbles: true }));
+    var target = card.querySelectorAll('select')[1];
+    var dept = target.options[1].value;
+    target.value = dept;
+    target.dispatchEvent(new Event('change', { bubbles: true }));
+    var amount = card.querySelector('input.num');
+    amount.value = '5000000';
+    amount.dispatchEvent(new Event('input', { bubbles: true }));
+    card.querySelector('input[placeholder*="دلیل"]').value = 'توافق با مدیر تیم';
+    Array.prototype.slice.call(card.querySelectorAll('button'))
+      .filter(function (b) { return b.textContent.trim() === 'اعمال روی گروه'; })[0].click();
+    return { dept: dept };
+  });
+  await page.waitForSelector('.modal');
+  await page.evaluate(function () {
+    Array.prototype.slice.call(document.querySelectorAll('.modal footer button'))
+      .filter(function (b) { return /اعمال/.test(b.textContent); })[0].click();
+  });
+  await page.waitForTimeout(600);
+  var bulkResult = await page.evaluate(function (dept) {
+    var rows = window.App.result.rows.filter(function (r) {
+      return (window.App.state.employees.filter(function (e) {
+        return e.employeeId === r.employeeId; })[0] || {}).department === dept;
+    });
+    return {
+      people: rows.length,
+      allSet: rows.every(function (r) { return r.hodAdjustment === 5000000; }),
+      reasons: rows.every(function (r) { return r.hodComment === 'توافق با مدیر تیم'; }),
+      sum: window.App.result.totals.sumFinalKaraneh,
+      status: window.App.result.totals.budgetStatus,
+      audits: window.App.state.auditLog.filter(function (a) {
+        return /تغییر گروهی/.test(a.reason); }).length
+    };
+  }, bulkAmounts.dept);
+  check('a bulk amount reaches every person in the group',
+    bulkResult.people > 1 && bulkResult.allSet, bulkResult.people + ' people');
+  check('the reason is recorded against each of them', bulkResult.reasons);
+  check('each bulk change is written to the audit log',
+    bulkResult.audits === bulkResult.people, bulkResult.audits + ' entries');
+  check('the budget still reconciles after a bulk change',
+    Math.abs(bulkResult.sum - 100000000000) < 1e-2 && bulkResult.status === 'BALANCED',
+    bulkResult.sum.toFixed(0));
+
+  /* A band agreed with the team's manager: too low a ceiling puts people out
+     of range, and the fix writes ordinary amounts that still reconcile. */
+  var band = await page.evaluate(function () {
+    /* Start from computed payouts, not from the amounts the previous check
+       set — otherwise the band it tests is one nobody is outside of. */
+    window.App.state.questionnaires.forEach(function (q) {
+      q.hodAdjustment = null; q.hodComment = '';
+    });
+    window.App.recalc();
+    var dept = window.App.state.employees[0].department;
+    window.App.state.teamLimits = {};
+    window.App.state.teamLimits[dept] = { min: 0, max: 400000000, manager: 'مدیر ۱' };
+    window.App.recalc();
+    var breaches = window.App.validation.filter(function (i) { return i.code === 'TEAM_BAND'; });
+    return { dept: dept, breaches: breaches.length };
+  });
+  check('people outside their team band are reported', band.breaches > 0,
+    band.breaches + ' in ' + band.dept);
+
+  var pulled = await page.evaluate(function (dept) {
+    window.App.go('hod');
+    var card = Array.prototype.slice.call(document.querySelectorAll('#sec-hod .card'))
+      .filter(function (c) { return /کف و سقف/.test(c.textContent); })[0];
+    var row = Array.prototype.slice.call(card.querySelectorAll('tbody tr'))
+      .filter(function (tr) { return tr.textContent.indexOf(dept) !== -1; })[0];
+    Array.prototype.slice.call(row.querySelectorAll('button'))
+      .filter(function (b) { return b.textContent.trim() === 'اصلاح'; })[0].click();
+    return true;
+  }, band.dept);
+  await page.waitForSelector('.modal');
+  await page.evaluate(function () {
+    Array.prototype.slice.call(document.querySelectorAll('.modal footer button'))
+      .filter(function (b) { return /اصلاح/.test(b.textContent); })[0].click();
+  });
+  await page.waitForTimeout(600);
+  var afterBand = await page.evaluate(function () {
+    return { breaches: window.App.validation.filter(function (i) {
+               return i.code === 'TEAM_BAND'; }).length,
+             sum: window.App.result.totals.sumFinalKaraneh };
+  });
+  check('bringing a team inside its band clears the breaches',
+    afterBand.breaches === 0, String(afterBand.breaches));
+  check('and the budget still reconciles',
+    Math.abs(afterBand.sum - 100000000000) < 1e-2, afterBand.sum.toFixed(0));
+
+  /* Put the workbook's own overrides back, so later checks see the dataset
+     they expect rather than the one this block was experimenting on. */
+  await page.evaluate(function () {
+    window.App.state.teamLimits = {};
+    var saved = {};
+    (window.__savedOverrides || []).forEach(function (o) { saved[o.id] = o; });
+    window.App.state.questionnaires.forEach(function (q) {
+      var o = saved[q.employeeId];
+      q.hodAdjustment = o ? o.amount : null;
+      q.hodComment = o ? o.note : '';
+    });
+    window.App.save();
+    window.App.recalc();
+  });
+
+  /* Bulk answers: fill a question that has been left blank. */
+  var bulkAnswers = await page.evaluate(function () {
+    window.App.state.questionnaires.slice(0, 5).forEach(function (q) { q.q2 = ''; });
+    window.App.recalc();
+    window.App.go('questionnaires');
+    var card = Array.prototype.slice.call(document.querySelectorAll('#main .card'))
+      .filter(function (c) { return /ویرایش گروهی پاسخ‌ها/.test(c.textContent); })[0];
+    var sels = card.querySelectorAll('select');
+    sels[0].value = 'q2';
+    sels[0].dispatchEvent(new Event('change', { bubbles: true }));
+    sels[1].value = 'زیاد';
+    Array.prototype.slice.call(card.querySelectorAll('button'))
+      .filter(function (b) { return /اعمال روی ردیف/.test(b.textContent); })[0].click();
+    return true;
+  });
+  await page.waitForSelector('.modal');
+  await page.evaluate(function () {
+    Array.prototype.slice.call(document.querySelectorAll('.modal footer button'))
+      .filter(function (b) { return /اعمال/.test(b.textContent); })[0].click();
+  });
+  await page.waitForTimeout(600);
+  var filled = await page.evaluate(function () {
+    return { blanks: window.App.state.questionnaires.filter(function (q) {
+               return !q.q2; }).length,
+             filled: window.App.state.questionnaires.slice(0, 5).every(function (q) {
+               return q.q2 === 'زیاد'; }) };
+  });
+  check('a bulk answer fills every blank it targeted', filled.filled && filled.blanks === 0,
+    filled.blanks + ' still blank');
 
   console.log('\n== ROSTER GUIDANCE AND BRAND MARK ==');
   var roster = await page.evaluate(function () {
@@ -1276,7 +1437,7 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   check('system settings are offered',
     hod.nav.some(function (n) { return n.indexOf('تنظیمات') !== -1; }));
   check('every screen of the cycle is there',
-    ['پرسنل', 'ورود پاسخ‌ها', 'پاسخ‌ها', 'اعتبارسنجی', 'پرداخت کارانه', 'تعیین مبلغ', 'خروجی']
+    ['پرسنل', 'ورود پاسخ‌ها', 'پاسخ‌ها', 'کارانه و پرداخت', 'خروجی']
       .every(function (want) {
         return hod.nav.some(function (n) { return n.indexOf(want) !== -1; });
       }), hod.nav.join(' , '));

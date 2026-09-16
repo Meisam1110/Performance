@@ -609,6 +609,29 @@ dl.kv dd { margin: 0; font-weight: 700; }
 .mailrow .who { min-width: 150px; font-weight: 700; font-size: 12.5px; }
 .mailrow input { flex: 1; min-width: 220px; }
 
+/* ======================================================= workspace sections */
+.secnav {
+  display: flex; gap: 6px; flex-wrap: wrap; margin: -4px 0 16px;
+  position: sticky; top: 0; z-index: 12; padding: 6px 0;
+  background: var(--bg);
+}
+.secnav-item {
+  display: flex; align-items: center; gap: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text-2);
+  border-radius: 20px; padding: 5px 12px; font-size: 12.5px; font-family: inherit;
+}
+.secnav-item:hover { border-color: var(--brand); color: var(--text); }
+.secnav-item .badge {
+  background: var(--err); color: #fff; border-radius: 9px;
+  font-size: 10.5px; font-weight: 700; padding: 0 6px;
+}
+.wsection { scroll-margin-top: 48px; }
+.wsection + .wsection {
+  border-top: 1px solid var(--border); margin-top: 26px; padding-top: 18px;
+}
+.section-head h2 { font-size: 17px; margin: 0 0 2px; }
+.section-head p { margin: 0; }
+
 /* ======================================================== narrow viewports
    The window is not always a desk monitor: the head of a division opens this
    on a laptop beside a meeting, and sometimes on a tablet. Everything below
