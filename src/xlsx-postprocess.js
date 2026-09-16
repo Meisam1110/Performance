@@ -480,5 +480,76 @@
     try { return writeZip(zip); } catch (e) { return bytes; }
   }
 
-  return { applyFormatting: applyFormatting, crc32: crc32 };
+  /* ==========================================================================
+   * Building an archive from scratch
+   *
+   * Splitting a roster by manager can mean a hundred files. A hundred separate
+   * downloads is a hundred browser prompts, so they travel as one archive.
+   * Entries are stored, not deflated: no compressor is bundled, the payload is
+   * already-compressed xlsx, and a stored entry is a perfectly ordinary zip.
+   * ========================================================================*/
+  function dosTime(d) {
+    return ((d.getHours() & 31) << 11) | ((d.getMinutes() & 63) << 5) |
+           ((Math.floor(d.getSeconds() / 2)) & 31);
+  }
+  function dosDate(d) {
+    return (((d.getFullYear() - 1980) & 127) << 9) | (((d.getMonth() + 1) & 15) << 5) |
+           (d.getDate() & 31);
+  }
+
+  function buildZip(files) {
+    var now = new Date(), time = dosTime(now), date = dosDate(now);
+    var parts = [], central = [], offset = 0, total = 0, i;
+
+    files.forEach(function (f) {
+      var name = utf8(f.name);
+      var data = f.bytes instanceof Uint8Array ? f.bytes : new Uint8Array(f.bytes);
+      var crc = crc32(data);
+
+      var lh = new Uint8Array(30 + name.length);
+      w32(lh, 0, 0x04034b50); lh[4] = 20; lh[5] = 0;
+      lh[6] = 0x00; lh[7] = 0x08;                 /* UTF-8 names */
+      lh[8] = 0; lh[9] = 0;                       /* stored */
+      w16(lh, 10, time); w16(lh, 12, date);
+      w32(lh, 14, crc); w32(lh, 18, data.length); w32(lh, 22, data.length);
+      w16(lh, 26, name.length); w16(lh, 28, 0);
+      lh.set(name, 30);
+
+      var cd = new Uint8Array(46 + name.length);
+      w32(cd, 0, 0x02014b50); cd[4] = 20; cd[5] = 0; cd[6] = 20; cd[7] = 0;
+      cd[8] = 0x00; cd[9] = 0x08;
+      cd[10] = 0; cd[11] = 0;
+      w16(cd, 12, time); w16(cd, 14, date);
+      w32(cd, 16, crc); w32(cd, 20, data.length); w32(cd, 24, data.length);
+      w16(cd, 28, name.length);
+      w32(cd, 42, offset);
+      cd.set(name, 46);
+
+      parts.push(lh, data);
+      central.push(cd);
+      offset += lh.length + data.length;
+      total += lh.length + data.length + cd.length;
+    });
+
+    var eocd = new Uint8Array(22);
+    w32(eocd, 0, 0x06054b50);
+    w16(eocd, 8, files.length); w16(eocd, 10, files.length);
+    var cdSize = central.reduce(function (a, c) { return a + c.length; }, 0);
+    w32(eocd, 12, cdSize); w32(eocd, 16, offset);
+
+    var out = new Uint8Array(total + eocd.length), pos = 0;
+    for (i = 0; i < parts.length; i++) { out.set(parts[i], pos); pos += parts[i].length; }
+    for (i = 0; i < central.length; i++) { out.set(central[i], pos); pos += central[i].length; }
+    out.set(eocd, pos);
+    return out;
+  }
+
+  function utf8(s) {
+    if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(s);
+    var bytes = unescape(encodeURIComponent(s)), a = new Uint8Array(bytes.length), i;
+    for (i = 0; i < bytes.length; i++) a[i] = bytes.charCodeAt(i);
+    return a;
+  }
+
+  return { applyFormatting: applyFormatting, crc32: crc32, buildZip: buildZip };
 }));

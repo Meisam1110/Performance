@@ -1889,33 +1889,81 @@
    * they hand each of their managers the people who report to that manager.
    * Any of the manager levels works, because org charts differ in depth.
    */
-  function openManagerSplit(preset) {
-    var fields = [
-      { key: 'directManager', label: 'مدیر مستقیم' },
-      { key: 'managerLevel1', label: 'مدیر سطح ۱' },
-      { key: 'managerLevel2', label: 'مدیر سطح ۲' },
-      { key: 'managerLevel3', label: 'مدیر سطح ۳' },
-      { key: 'jobLevel',      label: 'سطح شغلی' },
-      { key: 'division',      label: 'واحد سازمانی' }
-    ];
-    var field = preset || 'directManager';
-    var chosen = {};
+  /**
+   * Split the roster by manager and hand each of them their own file.
+   *
+   * The payroll file carries a name and an address for every management layer,
+   * so the groups and the recipients come from the same place. The message is
+   * written once, with placeholders, and each manager gets it addressed to
+   * them with their own questionnaire attached.
+   */
+  function splitFields() {
+    var fields = [{ key: 'directManager', label: 'مدیر مستقیم' }];
+    Tpl.MANAGER_LAYERS.forEach(function (l) {
+      fields.push({ key: l.key, label: l.label, email: l.email, layer: true });
+    });
+    return fields.concat([
+      { key: 'department', label: 'دپارتمان' },
+      { key: 'jobLevel',   label: 'سطح شغلی' },
+      { key: 'division',   label: 'واحد سازمانی' }
+    ]);
+  }
 
-    var listBox = el('div', { style: 'max-height:280px;overflow-y:auto;margin-top:10px' });
+  var MAIL_TEMPLATE = {
+    subject: 'پرسشنامه کارانه {دوره} — {مدیر}',
+    body: 'سلام {مدیر} عزیز،\n\n' +
+          'فایل پرسشنامه کارانه دورهٔ {دوره} برای {تعداد} نفر از همکاران شما پیوست است.\n' +
+          'لطفاً پاسخ هر سؤال را از فهرست کشویی همان خانه انتخاب کنید. شرح رفتاری هر سطح ' +
+          'در شیت BARS همان فایل آمده است.\n\n' +
+          'پس از تکمیل، فایل را به همین آدرس برگردانید.\n\nبا احترام'
+  };
+
+  function mailFill(text, ctx) {
+    return String(text)
+      .replace(/\{مدیر\}/g, ctx.manager)
+      .replace(/\{تعداد\}/g, U.int(ctx.count))
+      .replace(/\{دوره\}/g, ctx.period)
+      .replace(/\{گروه\}/g, ctx.group);
+  }
+
+  function openManagerSplit(preset) {
+    var fields = splitFields();
+    var field = preset || 'managerL3';
+    if (!fields.some(function (f) { return f.key === field; })) field = fields[0].key;
+
+    var chosen = {}, emails = {}, mode = 'eml';
+    var listBox = el('div', { style: 'max-height:260px;overflow-y:auto;margin-top:10px' });
     var summary = el('div', { class: 'small muted', style: 'margin-top:8px' });
 
-    function roster() {
-      return templateRoster(function (e) { return inScopeForRole({ division: e.division }); });
+    function meta() {
+      return fields.filter(function (f) { return f.key === field; })[0] || fields[0];
     }
 
-    function groupsFor(f) {
-      var g = {}, source = App.state.employees.filter(function (e) {
+    function inScopeEmployees() {
+      return App.state.employees.filter(function (e) {
         return isPayrollEligible(e) && inScopeForRole({ division: e.division });
       });
-      source.forEach(function (e) {
-        var k = e[f];
-        if (!k) { g['— ثبت نشده'] = (g['— ثبت نشده'] || 0) + 1; return; }
-        g[k] = (g[k] || 0) + 1;
+    }
+
+    /* Group people by the chosen field. For a management layer the value is
+       resolved rather than read: where a layer is empty the higher manager
+       answers, which is how the organisation actually works. */
+    function groupsFor(f) {
+      var layerIndex = -1;
+      Tpl.MANAGER_LAYERS.forEach(function (l, i) { if (l.key === f) layerIndex = i; });
+      var g = {};
+      inScopeEmployees().forEach(function (e) {
+        var name, mail = '';
+        if (layerIndex >= 0) {
+          var m = Tpl.managerFor(e, layerIndex);
+          name = m ? m.name : '— ثبت نشده';
+          mail = m ? m.email : '';
+        } else {
+          name = e[f] || '— ثبت نشده';
+        }
+        var slot = g[name] || (g[name] = { count: 0, email: '' });
+        slot.count++;
+        if (!slot.email && mail) slot.email = mail;
       });
       return g;
     }
@@ -1925,7 +1973,7 @@
       var names = Object.keys(g).sort(function (a, b) {
         return field === 'jobLevel' ? U.naturalCompare(b, a) : a.localeCompare(b, 'fa');
       });
-      chosen = {};
+      chosen = {}; emails = {};
       U.clear(listBox);
       if (!names.length) {
         listBox.appendChild(el('div', { class: 'small muted',
@@ -1935,23 +1983,48 @@
       }
       names.forEach(function (n) {
         chosen[n] = n.indexOf('— ثبت نشده') !== 0;
+        emails[n] = g[n].email || '';
         var cb = el('input', { type: 'checkbox' });
         cb.checked = chosen[n];
         cb.addEventListener('change', function () { chosen[n] = cb.checked; updateSummary(); });
-        listBox.appendChild(el('label', { class: 'checkline' }, [
-          cb, el('span', { text: n + ' — ' + g[n] + ' نفر' })
+
+        var mail = el('input', {
+          type: 'email', class: 'editable', style: 'flex:1;min-width:150px;font-size:12px',
+          placeholder: 'نشانی ایمیل'
+        });
+        mail.value = emails[n];
+        mail.addEventListener('input', function () {
+          emails[n] = mail.value.trim(); updateSummary();
+        });
+
+        listBox.appendChild(el('div', {
+          style: 'display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap'
+        }, [
+          el('label', { class: 'checkline', style: 'margin:0;min-width:180px;flex:1' }, [
+            cb, el('span', { text: n + ' — ' + g[n].count + ' نفر' })
+          ]),
+          mail
         ]));
       });
       updateSummary();
     }
 
+    function picked() {
+      return Object.keys(chosen).filter(function (k) { return chosen[k]; });
+    }
+
     function updateSummary() {
       var g = groupsFor(field);
-      var picked = Object.keys(chosen).filter(function (k) { return chosen[k]; });
-      var people = picked.reduce(function (a, k) { return a + (g[k] || 0); }, 0);
+      var names = picked();
+      var people = names.reduce(function (a, k) { return a + (g[k] ? g[k].count : 0); }, 0);
+      var missing = names.filter(function (k) { return !emails[k]; }).length;
       U.clear(summary);
-      summary.appendChild(el('b', { text: picked.length + ' فایل پرسشنامه' }));
+      summary.appendChild(el('b', { text: names.length + ' فایل' }));
       summary.appendChild(document.createTextNode(' • ' + people + ' نفر'));
+      if (mode !== 'files' && missing) {
+        summary.appendChild(el('span', { class: 'chip warn', style: 'margin-inline-start:8px',
+          text: missing + ' نشانی ایمیل خالی است' }));
+      }
     }
 
     var sel = el('select', { class: 'editable', style: 'width:100%' });
@@ -1959,42 +2032,159 @@
     sel.value = field;
     sel.addEventListener('change', function () { field = sel.value; renderGroups(); });
 
+    var modeSel = el('select', { class: 'editable', style: 'width:100%' }, [
+      el('option', { value: 'eml', text: 'ساخت ایمیل آماده با فایل پیوست (.eml)' }),
+      el('option', { value: 'mailto', text: 'بازکردن پیش‌نویس در برنامهٔ ایمیل (بدون پیوست)' }),
+      el('option', { value: 'files', text: 'فقط تولید فایل‌ها' })
+    ]);
+    modeSel.value = mode;
+
+    var subject = el('input', { type: 'text', class: 'editable', style: 'width:100%' });
+    subject.value = (App.state.mail && App.state.mail.splitSubject) || MAIL_TEMPLATE.subject;
+    var bodyText = el('textarea', { class: 'editable', style: 'width:100%;min-height:120px' });
+    bodyText.value = (App.state.mail && App.state.mail.splitBody) || MAIL_TEMPLATE.body;
+
+    var mailBox = el('div', {}, [
+      el('label', { class: 'field' }, [el('span', { text: 'موضوع ایمیل' }), subject]),
+      el('label', { class: 'field' }, [el('span', { text: 'متن ایمیل' }), bodyText]),
+      el('div', { class: 'small muted' }, [document.createTextNode(
+        'جای‌نشان‌ها: {مدیر} نام مدیر، {تعداد} تعداد نفرات، {دوره} دورهٔ کارانه، {گروه} نام گروه.')])
+    ]);
+    function syncMailBox() {
+      mailBox.style.display = mode === 'files' ? 'none' : '';
+      updateSummary();
+    }
+    modeSel.addEventListener('change', function () { mode = modeSel.value; syncMailBox(); });
+
     var body = el('div', {}, [
       el('label', { class: 'field' }, [el('span', { text: 'تفکیک بر اساس' }), sel]),
       listBox, summary,
+      el('label', { class: 'field', style: 'margin-top:12px' },
+        [el('span', { text: 'پس از تولید' }), modeSel]),
+      mailBox,
       el('div', { class: 'small muted', style: 'margin-top:10px' },
         [document.createTextNode(
           'هر فایل شامل شیت BARS، فهرست کشویی پاسخ‌ها و فهرست پرسنل همان گروه است.')])
     ]);
     renderGroups();
+    syncMailBox();
 
     U.modal({
-      title: 'تفکیک پرسشنامه', size: 'narrow', content: body,
+      title: 'تفکیک پرسشنامه و ارسال به مدیران', size: 'wide', content: body,
       buttons: [
-        { label: 'تولید فایل‌ها', kind: 'primary', onClick: function () {
-          var picked = Object.keys(chosen).filter(function (k) { return chosen[k]; });
-          if (!picked.length) { U.toast('هیچ گروهی انتخاب نشد.', 'warn'); return; }
-          var meta = fields.filter(function (f) { return f.key === field; })[0];
-          picked.forEach(function (name, i) {
-            setTimeout(function () {
-              downloadQuestionnaireTemplate({
-                filter: function (e) {
-                  var v = e[field] || '— ثبت نشده';
-                  return String(v) === name && inScopeForRole({ division: e.division });
-                },
-                scopeLabel: meta.label + ': ' + name,
-                suffix: safeFileNameOr(name, 'group'),
-                quiet: i < picked.length - 1
-              });
-            }, i * 520);
+        { label: 'تولید و ارسال', kind: 'primary', onClick: function () {
+          var names = picked();
+          if (!names.length) { U.toast('هیچ گروهی انتخاب نشد.', 'warn'); return; }
+          App.state.mail = App.state.mail || {};
+          App.state.mail.splitSubject = subject.value;
+          App.state.mail.splitBody = bodyText.value;
+          save();
+          runManagerSplit({
+            field: field, label: meta().label, names: names, emails: emails,
+            mode: mode, subject: subject.value, body: bodyText.value
           });
-          if (picked.length > 1) {
-            U.toast(picked.length + ' فایل در حال تولید است — همه در صفحهٔ دانلود می‌مانند.',
-              'warn', 8000);
-          }
         } },
         { label: 'انصراف' }
       ]
+    });
+  }
+
+  /**
+   * Produce one questionnaire per group and, unless only files were asked for,
+   * an addressed message to go with it.
+   */
+  function runManagerSplit(opts) {
+    var layerIndex = -1;
+    Tpl.MANAGER_LAYERS.forEach(function (l, i) { if (l.key === opts.field) layerIndex = i; });
+
+    function belongs(e, name) {
+      if (!inScopeForRole({ division: e.division })) return false;
+      if (layerIndex >= 0) {
+        var m = Tpl.managerFor(e, layerIndex);
+        return (m ? m.name : '— ثبت نشده') === name;
+      }
+      return String(e[opts.field] || '— ثبت نشده') === name;
+    }
+
+    var made = 0, mailed = 0, noAddress = [];
+    /* Past a handful of groups the browser's own download prompts become the
+       bottleneck, so everything goes out as one archive instead. */
+    var bundle = opts.names.length > 8 && window.XlsxPostprocess &&
+                 window.XlsxPostprocess.buildZip ? [] : null;
+
+    opts.names.forEach(function (name, i) {
+      setTimeout(function () {
+        var roster = templateRoster(function (e) { return belongs(e, name); });
+        var wb = Tpl.buildQuestionnaireTemplate(App.state.config, roster, {
+          XLSX: XLSX, period: App.state.period,
+          scopeLabel: opts.label + ': ' + name
+        });
+        var bytes = workbookBytes(wb);
+        var fileName = 'Template-Questionnaire-' + safeFileNameOr(name, 'group') +
+                       '-' + stamp() + '.xlsx';
+        if (bundle) bundle.push({ name: fileName, bytes: bytes });
+        else {
+          download(bytes, fileName,
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', name);
+        }
+        made++;
+
+        var ctx = { manager: name, count: roster.length,
+                    period: App.state.period, group: name };
+        var subject = mailFill(opts.subject, ctx);
+        var text = mailFill(opts.body, ctx);
+        var address = opts.emails[name] || '';
+
+        if (opts.mode === 'eml') {
+          var eml = buildEml({
+            to: address, subject: subject, body: text,
+            attachments: [{ filename: fileName, bytes: bytes,
+              type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }]
+          });
+          var emlName = 'Mail-' + safeFileNameOr(name, 'group') + '-' + stamp() + '.eml';
+          if (bundle) {
+            bundle.push({ name: emlName,
+              bytes: new TextEncoder().encode(eml) });
+          } else {
+            download(eml, emlName, 'message/rfc822', 'ایمیل ' + name);
+          }
+          if (address) mailed++; else noAddress.push(name);
+        } else if (opts.mode === 'mailto') {
+          if (address) {
+            window.open(mailtoUrl({ to: address, subject: subject, body: text }), '_blank');
+            mailed++;
+          } else {
+            noAddress.push(name);
+          }
+        }
+
+        if (i === opts.names.length - 1) {
+          if (bundle && bundle.length) {
+            download(window.XlsxPostprocess.buildZip(bundle),
+              'Karaneh-Split-' + safeFileNameOr(opts.label, 'groups') + '-' + stamp() + '.zip',
+              'application/zip', 'بستهٔ ' + made + ' فایل');
+          }
+          Store.audit(App.state, {
+            entity: 'template', field: 'split',
+            oldValue: '', newValue: made + ' فایل — ' + mailed + ' ایمیل',
+            reason: 'تفکیک پرسشنامه بر اساس ' + opts.label
+          });
+          save();
+          var msg = made + ' فایل تولید شد';
+          if (bundle) msg += ' و در یک فایل zip بسته‌بندی شد';
+          if (opts.mode === 'eml') {
+            msg += ' و ' + mailed + ' ایمیل آمادهٔ ارسال (.eml) کنار آن‌ها قرار گرفت. ' +
+                   'هر فایل .eml را باز کنید؛ گیرنده، متن و پیوست داخل آن است و فقط باید ارسال را بزنید.';
+          } else if (opts.mode === 'mailto') {
+            msg += ' و ' + mailed + ' پیش‌نویس ایمیل باز شد. فایل هر مدیر را از صفحهٔ دانلود پیوست کنید.';
+          }
+          if (noAddress.length) {
+            msg += ' برای ' + noAddress.length + ' گروه نشانی ایمیل ثبت نشده بود: ' +
+                   noAddress.slice(0, 3).join('، ') + (noAddress.length > 3 ? ' …' : '');
+          }
+          U.toast(msg, noAddress.length ? 'warn' : 'ok', 12000);
+        }
+      }, i * 420);
     });
   }
 
@@ -5414,7 +5604,9 @@
     var empAoa = [['شماره پرسنلی', 'وضعیت', 'نام', 'نام خانوادگی', 'نام و نام خانوادگی',
       'تاریخ استخدام', 'تاریخ خروج', 'عنوان شغلی', 'نوع همکاری', 'نوع استخدام', 'سطح شغلی',
       'واحد سازمانی', 'دپارتمان', 'روز کارکرد', 'وضعیت دوره آزمایشی',
-      'مدیر مستقیم', 'مدیر سطح 1', 'مدیر سطح 2', 'مدیر سطح 3', 'دارای پرسشنامه', 'فایل منبع']];
+      'مدیر مستقیم', 'مدیر سطح ۳', 'ایمیل مدیر سطح ۳', 'مدیر ۳H', 'ایمیل مدیر ۳H',
+      'مدیر سطح ۴', 'ایمیل مدیر سطح ۴', 'مدیر سطح ۵', 'ایمیل مدیر سطح ۵',
+      'دارای پرسشنامه', 'فایل منبع']];
     App.state.employees.forEach(function (e) {
       var has = App.state.questionnaires.some(function (q) {
         return q.employeeId === e.employeeId && !q.excluded;
@@ -5425,8 +5617,10 @@
         e.assignmentType || '', e.employmentType || '', e.jobLevel || '',
         e.division || '', e.department || '',
         (e.workingDays === null || e.workingDays === undefined) ? '' : e.workingDays,
-        e.probationStatus || '', e.directManager || '', e.managerLevel1 || '',
-        e.managerLevel2 || '', e.managerLevel3 || '', has ? 'بله' : 'خیر', e.sourceFile || '']);
+        e.probationStatus || '', e.directManager || '',
+        e.managerL3 || '', e.managerL3Email || '', e.managerL3h || '', e.managerL3hEmail || '',
+        e.managerL4 || '', e.managerL4Email || '', e.managerL5 || '', e.managerL5Email || '',
+        has ? 'بله' : 'خیر', e.sourceFile || '']);
     });
     XLSX.utils.book_append_sheet(wb, sheetFromAoa(empAoa, {
       cols: widths([13, 11, 13, 15, 20, 13, 13, 24, 12, 14, 8, 14, 14, 10, 14, 18, 18, 18, 18, 11, 20]),
@@ -5575,6 +5769,75 @@
    * afterwards by xlsx-postprocess.js. The size penalty is the cost of
    * frozen headers on a sheet that can run to thousands of rows.
    */
+  /* ======================================================================
+   * Mail with the file already attached
+   *
+   * A page cannot send email. `mailto:` opens a draft but cannot carry an
+   * attachment, which is the whole point here — so each message is written as
+   * an .eml file: a complete RFC 5322 message, the manager's address in the
+   * To: line, the questionnaire attached, ready to open in Outlook and send.
+   * The mailto route stays as the lighter alternative for anyone who prefers
+   * to attach the file themselves.
+   * ====================================================================*/
+  function base64Bytes(bytes) {
+    var chunk = 0x8000, out = '';
+    for (var i = 0; i < bytes.length; i += chunk) {
+      out += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(out);
+  }
+
+  /** Header values must be ASCII; anything else travels as encoded-word. */
+  function mimeHeader(text) {
+    var s = String(text || '');
+    if (/^[\x20-\x7E]*$/.test(s)) return s;
+    return '=?UTF-8?B?' + btoa(unescape(encodeURIComponent(s))) + '?=';
+  }
+
+  function buildEml(msg) {
+    var boundary = '----karaneh-' + Math.random().toString(16).slice(2);
+    var lines = [];
+    if (msg.from) lines.push('From: ' + mimeHeader(msg.from));
+    lines.push('To: ' + msg.to);
+    if (msg.cc) lines.push('Cc: ' + msg.cc);
+    lines.push('Subject: ' + mimeHeader(msg.subject));
+    lines.push('Date: ' + new Date().toUTCString());
+    lines.push('MIME-Version: 1.0');
+    lines.push('X-Unsent: 1');            /* Outlook opens it as a draft */
+    lines.push('Content-Type: multipart/mixed; boundary="' + boundary + '"');
+    lines.push('');
+    lines.push('--' + boundary);
+    lines.push('Content-Type: text/plain; charset="UTF-8"');
+    lines.push('Content-Transfer-Encoding: base64');
+    lines.push('');
+    lines.push(base64Bytes(new TextEncoder().encode(msg.body)).replace(/(.{76})/g, '$1\r\n'));
+
+    (msg.attachments || []).forEach(function (att) {
+      lines.push('--' + boundary);
+      lines.push('Content-Type: ' + (att.type || 'application/octet-stream') +
+                 '; name="' + att.filename + '"');
+      lines.push('Content-Transfer-Encoding: base64');
+      lines.push('Content-Disposition: attachment; filename="' + att.filename + '"');
+      lines.push('');
+      lines.push(base64Bytes(att.bytes).replace(/(.{76})/g, '$1\r\n'));
+    });
+    lines.push('--' + boundary + '--');
+    lines.push('');
+    return lines.join('\r\n');
+  }
+
+  /** The bytes of a workbook, formatted exactly as the download would be. */
+  function workbookBytes(wb) {
+    var spec = {};
+    wb.SheetNames.forEach(function (n) {
+      if (wb.Sheets[n]['!postprocess']) spec[n] = wb.Sheets[n]['!postprocess'];
+    });
+    var raw = XLSX.write(wb, { type: 'array', bookType: 'xlsx', compression: false });
+    return window.XlsxPostprocess
+      ? window.XlsxPostprocess.applyFormatting(raw, spec)
+      : new Uint8Array(raw);
+  }
+
   function writeWorkbook(wb, filename, label) {
     var spec = {};
     wb.SheetNames.forEach(function (n) {
@@ -5844,6 +6107,9 @@
      the modal, the same way `recalc` is exposed for the rest of the suite. */
   /* Test hook: the roster a questionnaire template is built from. */
   window.__templateRoster = function (filter) { return templateRoster(filter); };
+
+  /* Test hook: open the split dialog without clicking through the roster. */
+  window.__openSplit = function (field) { return openManagerSplit(field); };
 
   /* Test hook: the column mappings an import would actually run with. */
   window.__activeMappings = function () { return activeMappings(); };

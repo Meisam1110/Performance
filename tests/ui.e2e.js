@@ -1268,6 +1268,122 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   check('a bulk answer fills every blank it targeted', filled.filled && filled.blanks === 0,
     filled.blanks + ' still blank');
 
+  console.log('\n== SPLIT AND SEND TO MANAGERS ==');
+  await page.evaluate(function () { window.App.go('employees'); });
+  await page.waitForSelector('#main .card');
+  var mailDownloads = [];
+  var collect = function (d) { mailDownloads.push(d); };
+  page.on('download', collect);
+  await page.evaluate(function () {
+    document.querySelectorAll('#main button').forEach(function (b) {
+      if (b.textContent.trim() === 'تمپلیت به تفکیک مدیر مستقیم') b.click();
+    });
+  });
+  await page.waitForSelector('.modal .checkline');
+  var splitDialog = await page.evaluate(function () {
+    var modal = document.querySelector('.modal');
+    var fieldSel = modal.querySelector('select');
+    var options = Array.prototype.map.call(fieldSel.options, function (o) { return o.value; });
+    /* Group by the level-3 layer, as the payroll file names it. */
+    fieldSel.value = 'managerL3';
+    fieldSel.dispatchEvent(new Event('change', { bubbles: true }));
+    var mails = Array.prototype.map.call(modal.querySelectorAll('input[type="email"]'),
+      function (i) { return i.value; });
+    var lines = Array.prototype.slice.call(modal.querySelectorAll('.checkline'));
+    lines.forEach(function (l, i) {
+      var cb = l.querySelector('input');
+      if (i > 0 && cb.checked) cb.click();
+    });
+    var kept = modal.querySelectorAll('.checkline input:checked').length;
+    var name = lines[0].textContent.split('—')[0].trim();
+    return { options: options, mails: mails, kept: kept, name: name };
+  });
+  check('the split offers the file\'s own management layers',
+    splitDialog.options.indexOf('managerL3') !== -1 &&
+    splitDialog.options.indexOf('managerL3h') !== -1 &&
+    splitDialog.options.indexOf('department') !== -1, splitDialog.options.join(','));
+  check('addresses come from the payroll file',
+    splitDialog.mails.filter(function (m) { return /@/.test(m); }).length > 0,
+    splitDialog.mails.slice(0, 3).join(' , '));
+
+  await page.evaluate(function () {
+    Array.prototype.slice.call(document.querySelectorAll('.modal footer button'))
+      .filter(function (b) { return b.textContent.trim() === 'تولید و ارسال'; })[0].click();
+  });
+  await page.waitForTimeout(1600);
+  page.off('download', collect);
+
+  var emlName = null;
+  for (var d of mailDownloads) {
+    if (/\.eml$/.test(d.suggestedFilename())) { emlName = d; break; }
+  }
+  check('an email file is produced beside each questionnaire', !!emlName,
+    mailDownloads.map(function (d) { return d.suggestedFilename(); }).join(' , '));
+  if (emlName) {
+    var emlPath = path.join(downloadDir, emlName.suggestedFilename());
+    await emlName.saveAs(emlPath);
+    var eml = fs.readFileSync(emlPath, 'utf8');
+    check('it is addressed to the manager', /^To: .+@.+/m.test(eml),
+      (eml.match(/^To: .*/m) || [''])[0]);
+    check('the subject carries the period and the manager',
+      /^Subject: =\?UTF-8\?B\?/m.test(eml) || /^Subject: .+/m.test(eml));
+    check('the questionnaire is attached to it',
+      /Content-Disposition: attachment; filename=".*\.xlsx"/.test(eml),
+      (eml.match(/filename="[^"]*"/) || [''])[0]);
+    check('it opens as an unsent draft', /^X-Unsent: 1$/m.test(eml));
+    var b64 = eml.split(/Content-Disposition: attachment[^\r\n]*\r\n\r\n/)[1] || '';
+    var attachment = Buffer.from(b64.replace(/\r?\n/g, '').split('--')[0], 'base64');
+    check('the attachment is a real workbook',
+      attachment.slice(0, 2).toString() === 'PK', attachment.slice(0, 2).toString('hex'));
+    var attWb = XLSX0.read(attachment, { type: 'buffer' });
+    check('and it is the questionnaire for that group',
+      attWb.SheetNames.indexOf('BARS') !== -1, attWb.SheetNames.join(' | '));
+  }
+
+  /* Many groups would mean many browser prompts, so they travel as one zip. */
+  var zipDl = page.waitForEvent('download', { timeout: 45000 });
+  await page.evaluate(function () {
+    /* A roster wide enough to have twelve managers on the level-3 layer. */
+    window.__savedRoster = window.App.state.employees;
+    window.App.state.employees = window.SAMPLE_DATA.employees.slice(0, 36)
+      .map(function (e, i) {
+        return { employeeId: e.employeeId, fullName: e.fullName, division: e.division,
+                 department: 'تیم ' + (i % 4 + 1), positionTitle: e.positionTitle,
+                 jobLevel: e.jobLevel, employeeStatus: 'Active',
+                 managerL3: 'مدیر لایه ' + (i % 12 + 1),
+                 managerL3Email: 'layer' + (i % 12 + 1) + '@example.com',
+                 managerL5: '-' };
+      });
+    window.App._empIndexStamp = -1;
+    window.App.recalc();
+    window.__openSplit('managerL3');
+  });
+  await page.waitForSelector('.modal .checkline');
+  await page.evaluate(function () {
+    Array.prototype.slice.call(document.querySelectorAll('.modal footer button'))
+      .filter(function (b) { return b.textContent.trim() === 'تولید و ارسال'; })[0].click();
+  });
+  var zipFile = path.join(downloadDir, (await zipDl).suggestedFilename());
+  await (await zipDl).saveAs(zipFile);
+  check('a large split arrives as one archive', /\.zip$/.test(path.basename(zipFile)),
+    path.basename(zipFile));
+  var zipBytes = fs.readFileSync(zipFile);
+  check('the archive is a valid zip',
+    zipBytes.slice(0, 2).toString() === 'PK' &&
+    zipBytes.slice(-22, -18).toString('hex') === '504b0506',
+    zipBytes.length + ' bytes');
+  /* The end-of-central-directory record states the count; scanning for the
+     signature would also find the ones inside each stored xlsx. */
+  var entryCount = zipBytes.readUInt16LE(zipBytes.length - 22 + 10);
+  check('it holds a questionnaire and a message per manager', entryCount === 24,
+    entryCount + ' entries');
+
+  await page.evaluate(function () {
+    window.App.state.employees = window.__savedRoster;
+    window.App._empIndexStamp = -1;
+    window.App.recalc();
+  });
+
   console.log('\n== ROSTER GUIDANCE AND BRAND MARK ==');
   var roster = await page.evaluate(function () {
     window.App.go('employees');
@@ -1536,10 +1652,18 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   });
   await hodPage.waitForSelector('.modal .checkline');
   await hodPage.evaluate(function () {
+    /* One group only, and files without mail, so the check stays about the
+       questionnaire that comes out. */
+    var modeSel = Array.prototype.slice.call(document.querySelectorAll('.modal select'))
+      .filter(function (sel) {
+        return Array.prototype.some.call(sel.options, function (o) { return o.value === 'files'; });
+      })[0];
+    modeSel.value = 'files';
+    modeSel.dispatchEvent(new Event('change', { bubbles: true }));
     var lines = Array.prototype.slice.call(document.querySelectorAll('.modal .checkline'));
     lines.forEach(function (l, i) { var cb = l.querySelector('input'); if (i > 0 && cb.checked) cb.click(); });
     Array.prototype.slice.call(document.querySelectorAll('.modal footer button'))
-      .filter(function (b) { return b.textContent.trim() === 'تولید فایل‌ها'; })[0].click();
+      .filter(function (b) { return b.textContent.trim() === 'تولید و ارسال'; })[0].click();
   });
   var splitFile = path.join(downloadDir, (await splitDl).suggestedFilename());
   await (await splitDl).saveAs(splitFile);
