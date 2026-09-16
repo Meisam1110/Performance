@@ -468,6 +468,12 @@
             r.employeeId, r.fullName,
             'امتیاز کارانه ' + U.score(r.performanceKaraneh, 2) + ' کمتر از حد نصاب ' +
             App.state.config.specialImpactMinScore + ' است.');
+      } else if (r.impactAwaitingApproval) {
+        /* Not an error: the claim is recorded and simply has not been approved
+           yet, which is the whole point of the approval column. */
+        add('info', 'IMPACT_PENDING', 'اثرگذاری ویژه در انتظار تایید',
+            r.employeeId, r.fullName,
+            'تا تایید نشود، امتیاز ویژه در محاسبه نمی‌آید. ستون «تایید اثرگذاری» در بخش پاسخ‌ها.');
       } else if (r.specialProject && !(r.specialImpactValue > 0)) {
         add('warn', 'SPECIAL_NO_AMOUNT', 'اثرگذاری ویژه بدون امتیاز',
             r.employeeId, r.fullName, '');
