@@ -77,10 +77,10 @@
    * not that a name is missing. `managerFor` below resolves who answers.
    */
   var MANAGER_LAYERS = [
-    { key: 'managerL3',  email: 'managerL3Email',  label: 'مدیر سطح ۳' },
-    { key: 'managerL3h', email: 'managerL3hEmail', label: 'مدیر ۳H' },
-    { key: 'managerL4',  email: 'managerL4Email',  label: 'مدیر سطح ۴' },
-    { key: 'managerL5',  email: 'managerL5Email',  label: 'مدیر سطح ۵' }
+    { key: 'managerL3',  email: 'managerL3Email',  label: 'مدیر ۳',  level: '3' },
+    { key: 'managerL3h', email: 'managerL3hEmail', label: 'مدیر ۳H', level: '3H' },
+    { key: 'managerL4',  email: 'managerL4Email',  label: 'مدیر ۴',  level: '4' },
+    { key: 'managerL5',  email: 'managerL5Email',  label: 'مدیر ۵',  level: '5' }
   ];
 
   /** A layer cell that carries no one. The file writes "-" for that. */

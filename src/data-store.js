@@ -223,7 +223,7 @@
   var COMPARABLE = ['fullName', 'firstName', 'lastName', 'employeeStatus', 'positionTitle',
     'assignmentType', 'employmentType', 'jobLevel', 'division', 'department',
     'dateOfEmployment', 'dateOfLeaving', 'workingDays', 'probationStatus',
-    'directManager', 'managerLevel1', 'managerLevel2', 'managerLevel3',
+    'directManager', 'managerL3', 'managerL3h', 'managerL4', 'managerL5',
     'nationalId', 'gender'];
 
   function diffRecords(a, b) {

@@ -218,7 +218,35 @@
    * question goes, while any synonyms the administrator typed are kept.
    */
   function activeMappings() {
-    var maps = JSON.parse(JSON.stringify(App.state.columnMappings || cloneMappings()));
+    /* Start from the dictionary this build ships, then lay the administrator's
+       own synonyms over it.
+     *
+     * The stored mappings are a snapshot of whatever the dictionary looked
+     * like when the file was first saved. Reading them as the whole truth meant
+     * a field added later — the management layers and their addresses — simply
+     * did not exist for that file, and its columns came back as "ignored". A
+     * field the product has since dropped disappears the same way. */
+    var shipped = Import.DEFAULT_MAPPINGS;
+    var stored = App.state.columnMappings || {};
+    var maps = {};
+    Object.keys(shipped).forEach(function (field) {
+      var base = JSON.parse(JSON.stringify(shipped[field]));
+      var mine = stored[field];
+      if (mine && mine.synonyms && mine.synonyms.length) {
+        mine.synonyms.forEach(function (syn) {
+          if (base.synonyms.indexOf(syn) === -1) base.synonyms.push(syn);
+        });
+      }
+      maps[field] = base;
+    });
+    /* Question columns are not in the shipped dictionary beyond q1..q5, so any
+       stored entry for one is carried across before the loop below tops it up. */
+    Object.keys(stored).forEach(function (field) {
+      if (!maps[field] && /^q\d+$/.test(field)) {
+        maps[field] = JSON.parse(JSON.stringify(stored[field]));
+      }
+    });
+
     var questions = (App.state.config && App.state.config.questions) || [];
     var wanted = {};
 
@@ -396,6 +424,18 @@
         employeeId: employeeId || '', employeeName: employeeName || '', detail: detail || ''
       });
     }
+
+    /* Nobody above them anywhere in the chain: the file has no manager for
+       this person at any layer, so no split can reach them and no address can
+       be found. It is a gap in the payroll file, worth naming. */
+    App.state.employees.forEach(function (e) {
+      if (!isPayrollEligible(e)) return;
+      if (Tpl.managerFor(e, 0)) return;
+      add('warn', 'NO_MANAGER', 'مدیر بالادستی ثبت نشده',
+          e.employeeId, e.fullName,
+          'هیچ‌کدام از ستون‌های ۳، ۳H، ۴ و ۵ برای این فرد پر نیست؛ در تفکیک بر اساس مدیر ' +
+          'در گروه «ثبت نشده» می‌افتد.');
+    });
 
     /* Employees in the master file with no questionnaire at all. */
     App.state.employees.forEach(function (e) {
@@ -1506,11 +1546,13 @@
 
   var BREAKDOWNS = [
     { key: 'division',      label: 'واحد سازمانی' },
-    { key: 'directManager', label: 'مدیر مستقیم' },
-    { key: 'managerLevel1', label: 'مدیر سطح ۱' },
-    { key: 'managerLevel2', label: 'مدیر سطح ۲' },
+    { key: 'department',    label: 'دپارتمان' },
+    { key: 'directManager', label: 'مدیر مستقیم' }
+  ].concat(Tpl.MANAGER_LAYERS.map(function (l) {
+    return { key: l.key, label: l.label, layer: true };
+  })).concat([
     { key: 'positionTitle', label: 'عنوان شغلی' }
-  ];
+  ]);
 
   /**
    * What to break the payout chart down by, before anyone has chosen.
@@ -1528,7 +1570,10 @@
   function breakdownValue(row, field) {
     if (field === 'division') return row.division || '';
     if (field === 'positionTitle') return row.positionTitle || '';
-    return managerOf(row, field);
+    var layer = -1;
+    Tpl.MANAGER_LAYERS.forEach(function (l, i) { if (l.key === field) layer = i; });
+    if (layer >= 0) return layerName(row, layer);
+    return fieldOf(row, field);
   }
 
   function drawDashboardCharts(rows, hosts, breakdownField) {
@@ -1642,10 +1687,12 @@
         { key: 'jobLevel', label: 'JL', width: '48px' },
         { key: 'manager', label: 'مدیر مستقیم', width: '150px',
           value: function (r) { return managerOf(r, 'directManager'); } },
-        { key: 'managerL1', label: 'مدیر سطح ۱', width: '150px', hidden: true,
-          value: function (r) { return managerOf(r, 'managerLevel1'); } },
-        { key: 'managerL2', label: 'مدیر سطح ۲', width: '150px', hidden: true,
-          value: function (r) { return managerOf(r, 'managerLevel2'); } },
+        { key: 'mgr3', label: 'مدیر ۳', width: '150px',
+          value: function (r) { return layerName(r, 0); } },
+        { key: 'mgr3h', label: 'مدیر ۳H', width: '150px', hidden: true,
+          value: function (r) { return layerName(r, 1); } },
+        { key: 'mgr4', label: 'مدیر ۴', width: '150px', hidden: true,
+          value: function (r) { return layerName(r, 2); } },
         { key: 'performanceScore', label: 'امتیاز عملکرد', type: 'score', calculated: true },
         { key: 'performanceKaraneh', label: 'عدد کارانه', type: 'score', decimals: 2, calculated: true },
         { key: 'specialImpactValue', label: 'اثرگذاری ویژه', type: 'score', decimals: 0, calculated: true,
@@ -1719,7 +1766,7 @@
     }
     add(m.directManager);
     Tpl.MANAGER_LAYERS.forEach(function (l) { add(m[l.key]); });
-    ['managerLevel1', 'managerLevel2', 'managerLevel3'].forEach(function (k) { add(m[k]); });
+
     return out;
   }
 
@@ -1812,7 +1859,7 @@
             ? btn('تولید فایل معاون بخش', function () { openPackageBuilder(); }, 'primary')
             : null,
           btn('تمپلیت به تفکیک مدیر مستقیم', function () { openManagerSplit('directManager'); }),
-          btn('به تفکیک مدیر سطح ۱', function () { openManagerSplit('managerLevel1'); }),
+          btn('به تفکیک مدیر ۳H', function () { openManagerSplit('managerL3h'); }),
           btn('به تفکیک سطح شغلی', function () { downloadQuestionnaireTemplateByGroup('jobLevel'); }),
           btn('همهٔ حالت‌ها', function () { openManagerSplit(); }, 'ghost')
         ].filter(Boolean)),
@@ -1860,17 +1907,14 @@
         { key: 'dateOfEmployment', label: 'تاریخ استخدام', hidden: true },
         { key: 'dateOfLeaving', label: 'تاریخ خروج', hidden: true },
         { key: 'directManager', label: 'مدیر مستقیم' },
-        { key: 'managerL3', label: 'مدیر سطح ۳' },
-        { key: 'managerL3Email', label: 'ایمیل مدیر سطح ۳', hidden: true },
+        { key: 'managerL3', label: 'مدیر ۳' },
+        { key: 'managerL3Email', label: 'ایمیل مدیر ۳', hidden: true },
         { key: 'managerL3h', label: 'مدیر ۳H' },
         { key: 'managerL3hEmail', label: 'ایمیل مدیر ۳H', hidden: true },
-        { key: 'managerL4', label: 'مدیر سطح ۴', hidden: true },
-        { key: 'managerL4Email', label: 'ایمیل مدیر سطح ۴', hidden: true },
-        { key: 'managerL5', label: 'مدیر سطح ۵', hidden: true },
-        { key: 'managerL5Email', label: 'ایمیل مدیر سطح ۵', hidden: true },
-        { key: 'managerLevel1', label: 'مدیر سطح ۱ (قدیمی)', hidden: true },
-        { key: 'managerLevel2', label: 'مدیر سطح ۲ (قدیمی)', hidden: true },
-        { key: 'managerLevel3', label: 'مدیر سطح ۳ (قدیمی)', hidden: true },
+        { key: 'managerL4', label: 'مدیر ۴', hidden: true },
+        { key: 'managerL4Email', label: 'ایمیل مدیر ۴', hidden: true },
+        { key: 'managerL5', label: 'مدیر ۵', hidden: true },
+        { key: 'managerL5Email', label: 'ایمیل مدیر ۵', hidden: true },
         { key: 'nationalId', label: 'کد ملی', hidden: true },
         { key: 'gender', label: 'جنسیت', hidden: true },
         { key: 'hasQ', label: 'پرسشنامه', calculated: true,
@@ -1903,16 +1947,67 @@
    * written once, with placeholders, and each manager gets it addressed to
    * them with their own questionnaire attached.
    */
+  /**
+   * Every manager's address, gathered from every layer of every person.
+   *
+   * A manager appears in the file once per person who reports to them, and
+   * their address sits in the email column beside their name. Collecting them
+   * once means a group can be addressed however it was formed — by direct
+   * manager, by department, by anything — as long as that manager appears
+   * somewhere in the file's own chain.
+   */
+  function managerDirectory() {
+    if (App._mailDir && App._mailDirStamp === App.state.employees.length) {
+      return App._mailDir;
+    }
+    var dir = {};
+    App.state.employees.forEach(function (e) {
+      Tpl.MANAGER_LAYERS.forEach(function (l) {
+        var name = String(e[l.key] || '').trim();
+        var mail = String(e[l.email] || '').trim();
+        if (!name || Tpl.blankLayer(name) || !mail) return;
+        if (!dir[name]) dir[name] = mail;
+      });
+    });
+    /* Someone listed as a manager may also be an employee in the same file,
+       and then their own row carries the address. */
+    App.state.employees.forEach(function (e) {
+      var name = String(e.fullName || '').trim();
+      var mail = String(e.email || '').trim();
+      if (name && mail && !dir[name]) dir[name] = mail;
+    });
+    App._mailDir = dir;
+    App._mailDirStamp = App.state.employees.length;
+    return dir;
+  }
+
   function splitFields() {
-    var fields = [{ key: 'directManager', label: 'مدیر مستقیم' }];
-    Tpl.MANAGER_LAYERS.forEach(function (l) {
-      fields.push({ key: l.key, label: l.label, email: l.email, layer: true });
+    var fields = Tpl.MANAGER_LAYERS.map(function (l) {
+      return { key: l.key, label: l.label, email: l.email, layer: true };
     });
     return fields.concat([
+      { key: 'directManager', label: 'مدیر مستقیم' },
       { key: 'department', label: 'دپارتمان' },
       { key: 'jobLevel',   label: 'سطح شغلی' },
       { key: 'division',   label: 'واحد سازمانی' }
     ]);
+  }
+
+  /**
+   * The grouping to open on: the first one the file can actually answer.
+   * Offering «مدیر مستقیم» to a file that has no such column produced one
+   * group of everybody called "not recorded".
+   */
+  function defaultSplitField() {
+    var fields = splitFields();
+    for (var i = 0; i < fields.length; i++) {
+      var filled = App.state.employees.filter(function (e) {
+        var v = e[fields[i].key];
+        return v && !Tpl.blankLayer(v);
+      }).length;
+      if (filled) return fields[i].key;
+    }
+    return fields[0].key;
   }
 
   var MAIL_TEMPLATE = {
@@ -1934,8 +2029,8 @@
 
   function openManagerSplit(preset) {
     var fields = splitFields();
-    var field = preset || 'managerL3';
-    if (!fields.some(function (f) { return f.key === field; })) field = fields[0].key;
+    var field = preset || defaultSplitField();
+    if (!fields.some(function (f) { return f.key === field; })) field = defaultSplitField();
 
     var chosen = {}, emails = {}, mode = 'eml';
     var listBox = el('div', { style: 'max-height:260px;overflow-y:auto;margin-top:10px' });
@@ -1957,7 +2052,7 @@
     function groupsFor(f) {
       var layerIndex = -1;
       Tpl.MANAGER_LAYERS.forEach(function (l, i) { if (l.key === f) layerIndex = i; });
-      var g = {};
+      var g = {}, dir = managerDirectory();
       inScopeEmployees().forEach(function (e) {
         var name, mail = '';
         if (layerIndex >= 0) {
@@ -1967,6 +2062,9 @@
         } else {
           name = e[f] || '— ثبت نشده';
         }
+        /* Whatever the group was formed by, if its name is a manager the file
+           knows, their own address is the one to write in. */
+        if (!mail) mail = dir[name] || '';
         var slot = g[name] || (g[name] = { count: 0, email: '' });
         slot.count++;
         if (!slot.email && mail) slot.email = mail;
@@ -5610,8 +5708,8 @@
     var empAoa = [['شماره پرسنلی', 'وضعیت', 'نام', 'نام خانوادگی', 'نام و نام خانوادگی',
       'تاریخ استخدام', 'تاریخ خروج', 'عنوان شغلی', 'نوع همکاری', 'نوع استخدام', 'سطح شغلی',
       'واحد سازمانی', 'دپارتمان', 'روز کارکرد', 'وضعیت دوره آزمایشی',
-      'مدیر مستقیم', 'مدیر سطح ۳', 'ایمیل مدیر سطح ۳', 'مدیر ۳H', 'ایمیل مدیر ۳H',
-      'مدیر سطح ۴', 'ایمیل مدیر سطح ۴', 'مدیر سطح ۵', 'ایمیل مدیر سطح ۵',
+      'مدیر مستقیم', 'مدیر ۳', 'ایمیل مدیر ۳', 'مدیر ۳H', 'ایمیل مدیر ۳H',
+      'مدیر ۴', 'ایمیل مدیر ۴', 'مدیر ۵', 'ایمیل مدیر ۵',
       'دارای پرسشنامه', 'فایل منبع']];
     App.state.employees.forEach(function (e) {
       var has = App.state.questionnaires.some(function (q) {
@@ -6000,10 +6098,10 @@
     var levels = [
       { key: 'jobLevel', label: 'سطح شغلی' },
       { key: 'directManager', label: 'مدیر مستقیم' },
-      { key: 'managerLevel1', label: 'مدیر سطح ۱' },
-      { key: 'managerLevel2', label: 'مدیر سطح ۲' },
-      { key: 'managerLevel3', label: 'مدیر سطح ۳' }
-    ];
+      { key: 'department', label: 'دپارتمان' }
+    ].concat(Tpl.MANAGER_LAYERS.map(function (l) {
+      return { key: l.key, label: l.label, layer: true };
+    }));
     var chosen = 'jobLevel';
     var mode = 'sheets';
 
@@ -6318,12 +6416,13 @@
 
     var fields = [
       { key: 'division',      label: 'واحد سازمانی' },
-      { key: 'directManager', label: 'مدیر مستقیم' },
-      { key: 'managerLevel1', label: 'مدیر سطح ۱' },
-      { key: 'managerLevel2', label: 'مدیر سطح ۲' },
-      { key: 'managerLevel3', label: 'مدیر سطح ۳' },
+      { key: 'department',    label: 'دپارتمان' },
+      { key: 'directManager', label: 'مدیر مستقیم' }
+    ].concat(Tpl.MANAGER_LAYERS.map(function (l) {
+      return { key: l.key, label: l.label };
+    })).concat([
       { key: 'jobLevel',      label: 'سطح شغلی' }
-    ];
+    ]);
     var field = 'division';
     var chosen = {};
 

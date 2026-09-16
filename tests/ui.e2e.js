@@ -830,7 +830,7 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
     /* Give the master records managers so the split has something to group on. */
     window.App.state.employees.forEach(function (e, i) {
       e.directManager = 'مدیر ' + (i % 3 + 1);
-      e.managerLevel1 = 'معاون ' + (i % 2 + 1);
+      e.managerL3h = 'معاون ' + (i % 2 + 1);
     });
     window.App.recalc();
     return window.App.state.employees.length;
@@ -1268,6 +1268,33 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   check('a bulk answer fills every blank it targeted', filled.filled && filled.blanks === 0,
     filled.blanks + ' still blank');
 
+  console.log('\n== COLUMN MAPPING SURVIVES AN UPGRADE ==');
+  /* A file saved before a field existed must still recognise its columns:
+     the stored mappings are an overlay, not the whole dictionary. */
+  var upgrade = await page.evaluate(function () {
+    var stale = JSON.parse(JSON.stringify(window.ExcelImport.DEFAULT_MAPPINGS));
+    ['managerL3', 'managerL3Email', 'managerL3h', 'managerL3hEmail',
+     'managerL4', 'managerL4Email', 'managerL5', 'managerL5Email'].forEach(function (k) {
+      delete stale[k];
+    });
+    stale.division.synonyms.push('واحد اختصاصی من');
+    stale.managerLevelOld = { label: 'حذف‌شده', group: 'employee', synonyms: ['legacy'] };
+    var saved = window.App.state.columnMappings;
+    window.App.state.columnMappings = stale;
+    var maps = window.__activeMappings();
+    window.App.state.columnMappings = saved;
+    return {
+      knowsLayers: !!maps.managerL3 && !!maps.managerL3Email && !!maps.managerL5,
+      keepsCustom: maps.division.synonyms.indexOf('واحد اختصاصی من') !== -1,
+      dropsRemoved: !maps.managerLevelOld,
+      noLegacyLevels: !maps.managerLevel1 && !maps.managerLevel2 && !maps.managerLevel3
+    };
+  });
+  check('a field added after the file was saved is still mapped', upgrade.knowsLayers);
+  check('the administrator\'s own synonyms are kept', upgrade.keepsCustom);
+  check('a field the product dropped stops claiming columns', upgrade.dropsRemoved);
+  check('the old numbered manager levels are gone', upgrade.noLegacyLevels);
+
   console.log('\n== SPLIT AND SEND TO MANAGERS ==');
   await page.evaluate(function () { window.App.go('employees'); });
   await page.waitForSelector('#main .card');
@@ -1305,8 +1332,31 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   check('addresses come from the payroll file',
     splitDialog.mails.filter(function (m) { return /@/.test(m); }).length > 0,
     splitDialog.mails.slice(0, 3).join(' , '));
+  check('every group that has a known manager gets their address',
+    splitDialog.mails.filter(function (m) { return /@/.test(m); }).length ===
+    splitDialog.mails.length, splitDialog.mails.join(' , '));
+  check('the layers are named by the manager\'s level, not by a rung number',
+    splitDialog.options.indexOf('managerL3h') !== -1 &&
+    splitDialog.options.indexOf('managerLevel1') === -1, splitDialog.options.join(','));
+
+  var byDirect = await page.evaluate(function () {
+    /* Group by direct manager: the name is not a layer column, so the address
+       has to come from the directory built out of the layers. */
+    var modal = document.querySelector('.modal');
+    var fieldSel = modal.querySelector('select');
+    fieldSel.value = 'directManager';
+    fieldSel.dispatchEvent(new Event('change', { bubbles: true }));
+    return Array.prototype.map.call(modal.querySelectorAll('input[type="email"]'),
+      function (i) { return i.value; });
+  });
+  check('a group formed some other way still finds the manager\'s address',
+    byDirect.filter(function (m) { return /@/.test(m); }).length > 0,
+    byDirect.slice(0, 3).join(' , '));
 
   await page.evaluate(function () {
+    var fieldSel = document.querySelector('.modal select');
+    fieldSel.value = 'managerL3';
+    fieldSel.dispatchEvent(new Event('change', { bubbles: true }));
     Array.prototype.slice.call(document.querySelectorAll('.modal footer button'))
       .filter(function (b) { return b.textContent.trim() === 'تولید و ارسال'; })[0].click();
   });
@@ -1479,7 +1529,7 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
     var mgr = ['مدیر الف', 'مدیر ب', 'مدیر ج'];
     window.App.state.employees.forEach(function (e, i) {
       e.directManager = mgr[i % 3];
-      e.managerLevel1 = 'معاون ' + (i % 2 + 1);
+      e.managerL3h = 'معاون ' + (i % 2 + 1);
     });
     window.App.recalc();
     window.App.go('employees');

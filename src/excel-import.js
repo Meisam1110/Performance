@@ -113,23 +113,23 @@
       synonyms: ['مدیر مستقیم', 'سرپرست مستقیم', 'direct manager', 'manager',
                  'manager name', 'line manager', 'reports to']
     },
-    managerLevel1: { label: 'مدیر سطح ۱', group: 'employee', synonyms: ['مدیر سطح 1', 'manager level 1', 'manager 1', 'manager name 1', 'manager hierarchy 1'] },
-    managerLevel2: { label: 'مدیر سطح ۲', group: 'employee', synonyms: ['مدیر سطح 2', 'manager level 2', 'manager 2', 'manager name 2', 'manager hierarchy 2'] },
-    managerLevel3: { label: 'مدیر سطح ۳', group: 'employee', synonyms: ['مدیر سطح 3', 'manager level 3', 'manager 3', 'manager name 3', 'manager hierarchy 3'] },
-
     /* ---- management layers, as the payroll file carries them ----
-       Headers are the layer's job level ("3", "3H", "4", "5"), each followed
-       by that manager's address. The file already shifts the chain upwards for
-       anyone who has no manager at a layer, so a "-" means the chain ends
-       there rather than that a name is missing. */
-    managerL3:       { label: 'مدیر سطح ۳ (لایه)', group: 'employee', layer: 0, synonyms: ['3', 'مدیر سطح 3', 'manager 3', 'jl3 manager', 'level 3 manager'] },
-    managerL3Email:  { label: 'ایمیل مدیر سطح ۳', group: 'employee', layerEmail: 0, synonyms: ['email3', 'email 3', 'ایمیل 3', 'ایمیل مدیر سطح 3', 'mail 3'] },
-    managerL3h:      { label: 'مدیر ۳H (لایه)', group: 'employee', layer: 1, synonyms: ['3h', 'مدیر 3h', 'manager 3h', 'jl3h manager', 'level 3h manager'] },
+       A layer is named by the job level of the manager sitting in it — 3, 3H,
+       4, 5 — and each is followed by that manager's address. Not everyone has
+       every layer: an empty cell means there is nobody at that level above
+       this person, and the next layer up answers for them.
+
+       The old "Manager Level 1/2/3" fields are gone. They numbered the rungs
+       of a chain rather than naming the level of the person standing on it,
+       which is not how this organisation talks about its managers. */
+    managerL3:       { label: 'مدیر ۳', group: 'employee', layer: 0, synonyms: ['3', 'مدیر 3', 'manager 3', 'jl3 manager', 'level 3 manager', 'مدیر سطح 3'] },
+    managerL3Email:  { label: 'ایمیل مدیر ۳', group: 'employee', layerEmail: 0, synonyms: ['email3', 'email 3', 'ایمیل 3', 'ایمیل مدیر 3', 'mail 3'] },
+    managerL3h:      { label: 'مدیر ۳H', group: 'employee', layer: 1, synonyms: ['3h', 'مدیر 3h', 'manager 3h', 'jl3h manager', 'level 3h manager'] },
     managerL3hEmail: { label: 'ایمیل مدیر ۳H', group: 'employee', layerEmail: 1, synonyms: ['email 3h', 'email3h', 'ایمیل 3h', 'ایمیل مدیر 3h', 'mail 3h'] },
-    managerL4:       { label: 'مدیر سطح ۴ (لایه)', group: 'employee', layer: 2, synonyms: ['4', 'مدیر سطح 4', 'manager 4', 'jl4 manager', 'level 4 manager'] },
-    managerL4Email:  { label: 'ایمیل مدیر سطح ۴', group: 'employee', layerEmail: 2, synonyms: ['email 4', 'email4', 'ایمیل 4', 'ایمیل مدیر سطح 4', 'mail 4'] },
-    managerL5:       { label: 'مدیر سطح ۵ (لایه)', group: 'employee', layer: 3, synonyms: ['5', 'مدیر سطح 5', 'manager 5', 'jl5 manager', 'level 5 manager'] },
-    managerL5Email:  { label: 'ایمیل مدیر سطح ۵', group: 'employee', layerEmail: 3, synonyms: ['email 5', 'email5', 'ایمیل 5', 'ایمیل مدیر سطح 5', 'mail 5'] },
+    managerL4:       { label: 'مدیر ۴', group: 'employee', layer: 2, synonyms: ['4', 'مدیر 4', 'manager 4', 'jl4 manager', 'level 4 manager', 'مدیر سطح 4'] },
+    managerL4Email:  { label: 'ایمیل مدیر ۴', group: 'employee', layerEmail: 2, synonyms: ['email 4', 'email4', 'ایمیل 4', 'ایمیل مدیر 4', 'mail 4'] },
+    managerL5:       { label: 'مدیر ۵', group: 'employee', layer: 3, synonyms: ['5', 'مدیر 5', 'manager 5', 'jl5 manager', 'level 5 manager', 'مدیر سطح 5'] },
+    managerL5Email:  { label: 'ایمیل مدیر ۵', group: 'employee', layerEmail: 3, synonyms: ['email 5', 'email5', 'ایمیل 5', 'ایمیل مدیر 5', 'mail 5'] },
 
     /* ---- questionnaire ---- */
     q1: { label: 'سؤال ۱', group: 'questionnaire', synonyms: ['q1', 'س1', 'سوال 1', 'سؤال 1', 'question 1'] },
@@ -155,8 +155,14 @@
     hodAdjustment: {
       label: 'تغییرات معاون بخش', group: 'both',
       synonyms: ['تغییرات معاون بخش', 'تغییرات معاون', 'hod adjustment', 'hod override',
-                 'hod adjust', 'مبلغ پیشنهادی معاون', 'مبلغ تعیین شده', 'مبلغ نهایی',
-                 'کارانه نهایی', 'final karaneh']
+                 'hod adjust', 'مبلغ پیشنهادی معاون', 'مبلغ تعیین شده']
+    },
+    /* The payroll file's own payout column. Kept as a field of its own rather
+       than folded into the set amount: on an employee import it is history,
+       and only the amounts import reads it as a figure to apply. */
+    finalKaraneh: {
+      label: 'کارانه نهایی', group: 'both',
+      synonyms: ['کارانه نهایی', 'مبلغ نهایی', 'final karaneh', 'karaneh']
     },
     hodComment: {
       label: 'توضیح معاون بخش', group: 'both',
