@@ -1268,6 +1268,49 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   check('a bulk answer fills every blank it targeted', filled.filled && filled.blanks === 0,
     filled.blanks + ' still blank');
 
+  console.log('\n== ONE EDIT, ONE ROW ==');
+  /* Every edit finds its record by `_key`. Two records sharing one means a
+     tick on one row lands on another — which is what a counter restarted from
+     the record count used to produce after any removal. */
+  var keys = await page.evaluate(function () {
+    window.__savedKeyRoster = window.App.state.questionnaires;
+    window.App.state.questionnaires = [
+      { _key: 'q1', employeeId: 'K1', fullName: 'الف', q1: 'زیاد', q2: 'زیاد', q3: 'زیاد',
+        q4: 'زیاد', specialProject: 'بله' },
+      { _key: 'q5', employeeId: 'K2', fullName: 'ب', q1: 'زیاد', q2: 'زیاد', q3: 'زیاد',
+        q4: 'زیاد', specialProject: 'بله' },
+      { _key: 'q5', employeeId: 'K3', fullName: 'ج', q1: 'زیاد', q2: 'زیاد', q3: 'زیاد',
+        q4: 'زیاد', specialProject: 'بله' }
+    ];
+    var fixed = window.__repairKeys();
+    var after = window.App.state.questionnaires.map(function (q) { return q._key; });
+    window.App.recalc();
+
+    var third = window.App.result.rows.filter(function (r) { return r.employeeId === 'K3'; })[0];
+    window.__editField(window.__byKey(third._input._key), 'impactApproved', 'بله', 'test');
+    var approved = window.App.state.questionnaires.map(function (q) {
+      return q.employeeId + ':' + (q.impactApproved ? 'yes' : 'no');
+    });
+
+    /* A new record must never be handed a key that is already out. */
+    var beforeAdd = window.App.state.questionnaires.map(function (q) { return q._key; });
+    window.App.state.questionnaires.push({ employeeId: 'K4', fullName: 'د' });
+    var repaired = window.__repairKeys();
+    var newKey = window.App.state.questionnaires[3]._key;
+
+    window.App.state.questionnaires = window.__savedKeyRoster;
+    window.__repairKeys();
+    window.App.recalc();
+    return { fixed: fixed, after: after, approved: approved,
+             newKey: newKey, clash: beforeAdd.indexOf(newKey) !== -1, repaired: repaired };
+  });
+  check('duplicate record keys are repaired on load', keys.fixed === 1 &&
+    keys.after[1] !== keys.after[2], keys.after.join(','));
+  check('ticking one row changes only that row',
+    keys.approved.join(' ') === 'K1:no K2:no K3:yes', keys.approved.join(' '));
+  check('a new record never reuses a key that is still in use',
+    !keys.clash, keys.newKey);
+
   console.log('\n== A SPLIT BY LAYER LEAVES NOBODY OUT ==');
   /* Not everyone has a manager at every level. Grouping by a layer must fall
      up the chain — no 3 means their 3H, no 3H their 4, no 4 their 5 — so a
@@ -1492,6 +1535,98 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
     window.App.state.employees = window.__savedRoster;
     window.App._empIndexStamp = -1;
     window.App.recalc();
+  });
+
+  console.log('\n== IMPORTING AMOUNTS ==');
+  var amounts = await page.evaluate(function () {
+    function fileOf(header) {
+      var aoa = [['شماره پرسنلی', header, 'توضیح معاون بخش']];
+      window.App.result.rows.slice(0, 3).forEach(function (r) {
+        aoa.push([r.employeeId, 7000000000, 'از فایل']);
+      });
+      var wb = window.XLSX.utils.book_new();
+      window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.aoa_to_sheet(aoa), 'Amounts');
+      var bytes = window.XLSX.write(wb, { type: 'array', bookType: 'xlsx', compression: false });
+      return window.ExcelImport.parseWorkbook(bytes, {
+        fileName: 'amounts.xlsx', kind: 'employee', mappings: window.__activeMappings()
+      });
+    }
+
+    /* A file whose amount column is not recognised must change nothing. */
+    var before = window.App.state.questionnaires.map(function (q) { return q.hodAdjustment; });
+    window.__showImportPreview([fileOf('ستون بی‌ربط')], [], 'amounts');
+    Array.prototype.slice.call(document.querySelectorAll('.modal footer button'))
+      .filter(function (b) { return /اعمال مبالغ/.test(b.textContent); })[0].click();
+    var guard = Array.prototype.map.call(document.querySelectorAll('.modal'),
+      function (m) { return m.textContent; }).join(' ');
+    var untouched = window.App.state.questionnaires.every(function (q, i) {
+      return String(q.hodAdjustment || '') === String(before[i] || '');
+    });
+    document.querySelectorAll('.modal').forEach(function (m) { m.remove(); });
+    document.querySelectorAll('.modal-back, .backdrop').forEach(function (m) { m.remove(); });
+
+    /* And one whose column is recognised must land. */
+    var good = fileOf('کارانه نهایی (ریال)');
+    var targets = good.records.map(function (r) { return String(r.employeeId); });
+    window.__showImportPreview([good], [], 'amounts');
+    Array.prototype.slice.call(document.querySelectorAll('.modal footer button'))
+      .filter(function (b) { return /اعمال مبالغ/.test(b.textContent); })[0].click();
+    return {
+      guarded: /ستون مبلغ پیدا نشد/.test(guard), untouched: untouched,
+      mapped: good.mapping.finalKaraneh !== undefined,
+      applied: window.App.state.questionnaires.filter(function (q) {
+        return targets.indexOf(String(q.employeeId)) !== -1 && q.hodAdjustment === 7000000000;
+      }).length,
+      wanted: targets.length
+    };
+  });
+  check('an amounts file with no amount column is refused, not applied blank',
+    amounts.guarded && amounts.untouched);
+  check('the payment export\'s own amount column is recognised', amounts.mapped);
+  check('imported amounts reach their people',
+    amounts.applied === amounts.wanted, amounts.applied + ' of ' + amounts.wanted);
+  await page.waitForTimeout(500);
+  var amountTotals = await page.evaluate(function () {
+    return { sum: window.App.result.totals.sumFinalKaraneh,
+             overridden: window.App.result.totals.overriddenCount };
+  });
+  check('the budget still reconciles after an amounts import',
+    Math.abs(amountTotals.sum - 100000000000) < 1e-2, amountTotals.sum.toFixed(0));
+
+  await page.evaluate(function () {
+    var saved = {};
+    (window.__savedOverrides || []).forEach(function (o) { saved[o.id] = o; });
+    window.App.state.questionnaires.forEach(function (q) {
+      var o = saved[q.employeeId];
+      q.hodAdjustment = o ? o.amount : null;
+      q.hodComment = o ? o.note : '';
+    });
+    window.App.save();
+    window.App.recalc();
+  });
+
+  console.log('\n== IMPORTED FILES ARE LISTED BY KIND ==');
+  var lists = await page.evaluate(function () {
+    window.App.state.importBatches = [
+      { batchId: 'b1', fileName: 'answers.xlsx', kind: 'questionnaire', sheetName: 'q',
+        headerRow: 6, accepted: 10, mappedCount: 12, importedAt: new Date().toISOString(),
+        mapping: {}, headers: [], unmapped: [], warnings: [] },
+      { batchId: 'b2', fileName: 'payroll.xlsx', kind: 'employee', sheetName: 'k',
+        headerRow: 1, accepted: 85, mappedCount: 25, importedAt: new Date().toISOString(),
+        mapping: {}, headers: [], unmapped: [], warnings: [] }
+    ];
+    window.App.go('import');
+    var titles = Array.prototype.map.call(document.querySelectorAll('#main .card > h2'),
+      function (h) { return h.textContent.trim(); });
+    return { titles: titles };
+  });
+  check('questionnaire files and personnel files are listed separately',
+    lists.titles.some(function (t) { return /فایل‌های پرسشنامه/.test(t); }) &&
+    lists.titles.some(function (t) { return /فایل‌های پرسنل/.test(t); }),
+    lists.titles.join(' | '));
+  await page.evaluate(function () {
+    window.App.state.importBatches = [];
+    window.App.go('questionnaires');
   });
 
   console.log('\n== ROSTER GUIDANCE AND BRAND MARK ==');

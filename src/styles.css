@@ -359,6 +359,9 @@ table.grid td.neg { color: var(--err); font-weight: 700; }
 table.grid tr.row-err td { background: var(--err-soft); }
 table.grid tr.row-warn td { background: var(--warn-soft); }
 table.grid tr.row-excluded td { opacity: .5; text-decoration: line-through; }
+/* Personnel files sit in their own table; the tint is a second reminder that
+   these rows are not questionnaires. */
+table.grid tr.row-employee-file td { background: var(--surface-3); }
 
 .table-toolbar {
   display: flex; gap: 8px; align-items: center; flex-wrap: wrap;

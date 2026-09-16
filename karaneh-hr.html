@@ -379,6 +379,9 @@ table.grid td.neg { color: var(--err); font-weight: 700; }
 table.grid tr.row-err td { background: var(--err-soft); }
 table.grid tr.row-warn td { background: var(--warn-soft); }
 table.grid tr.row-excluded td { opacity: .5; text-decoration: line-through; }
+/* Personnel files sit in their own table; the tint is a second reminder that
+   these rows are not questionnaires. */
+table.grid tr.row-employee-file td { background: var(--surface-3); }
 
 .table-toolbar {
   display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
@@ -2011,7 +2014,8 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
        and only the amounts import reads it as a figure to apply. */
     finalKaraneh: {
       label: 'کارانه نهایی', group: 'both',
-      synonyms: ['کارانه نهایی', 'مبلغ نهایی', 'final karaneh', 'karaneh']
+      synonyms: ['کارانه نهایی', 'مبلغ نهایی', 'final karaneh', 'karaneh',
+                 'مبلغ کارانه', 'مبلغ', 'amount', 'karaneh amount', 'رقم']
     },
     hodComment: {
       label: 'توضیح معاون بخش', group: 'both',
@@ -4306,6 +4310,11 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
       if (keepScroll) {
         requestAnimationFrame(function () { wrap.scrollTop = keepScroll; });
       }
+
+      /* Anything outside the table that describes what it is showing — a bulk
+         edit panel counting its targets, say — is told after every repaint,
+         because filtering here changes what those tools would act on. */
+      if (opts.onRender) opts.onRender(rows, state);
     }
 
     wrap.addEventListener('scroll', function () {
@@ -4547,7 +4556,14 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
       if (!App.state.theme) App.state.theme = 'light';
       if (!App.state.hodScope) App.state.hodScope = [];
       migrateConfig(App.state.config);
-      App._keySeq = App.state.questionnaires.length;
+      var repaired = repairRecordKeys();
+      if (repaired) {
+        Store.audit(App.state, {
+          entity: 'questionnaire', field: '_key', oldValue: 'تکراری',
+          newValue: repaired + ' رکورد', reason: 'اصلاح کلیدهای تکراری رکوردها'
+        });
+        save();
+      }
       renderShell();
       recalc();
       App.booted = true;
@@ -4794,6 +4810,68 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
       return false;
     });
     return found;
+  }
+
+  /* ======================================================================
+   * Record keys
+   *
+   * Every questionnaire row carries a `_key`, and every edit — a ticked
+   * approval, a changed answer, a set amount — finds its record by it. Two
+   * records sharing a key means an edit lands on the wrong person: you tick
+   * one row and another lights up.
+   *
+   * The counter used to restart from the number of records, so after any
+   * removal the next import handed out a key that was still in use. It is
+   * taken from the highest key actually present instead, and every new key is
+   * checked against the ones already out.
+   * ====================================================================*/
+  var keysInUse = null;
+
+  function resetRecordKeys() {
+    keysInUse = null;
+    var high = 0;
+    (App.state.questionnaires || []).forEach(function (q) {
+      var m = /^q(\d+)$/.exec(String(q._key || ''));
+      if (m) high = Math.max(high, Number(m[1]));
+    });
+    App._keySeq = high;
+  }
+
+  function recordKeySet() {
+    if (!keysInUse) {
+      keysInUse = {};
+      (App.state.questionnaires || []).forEach(function (q) {
+        if (q._key) keysInUse[q._key] = 1;
+      });
+    }
+    return keysInUse;
+  }
+
+  function nextRecordKey() {
+    var used = recordKeySet(), n = App._keySeq || 0, key;
+    do { key = 'q' + (++n); } while (used[key]);
+    App._keySeq = n;
+    used[key] = 1;
+    return key;
+  }
+
+  /**
+   * Give any record a key of its own.
+   * Older saved files can already hold duplicates from the counter bug, and
+   * they stay broken until the keys are made unique again.
+   */
+  function repairRecordKeys() {
+    resetRecordKeys();
+    var seen = {}, fixed = 0;
+    (App.state.questionnaires || []).forEach(function (q) {
+      if (!q._key || seen[q._key]) {
+        q._key = nextRecordKey();
+        fixed++;
+      }
+      seen[q._key] = 1;
+      recordKeySet()[q._key] = 1;
+    });
+    return fixed;
   }
 
   function questionnaireByKey(key) {
@@ -6754,19 +6832,30 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
       'فایل‌های پرسشنامه را اینجا رها کنید',
       'xlsx / xls / xlsb / csv — انتخاب چندتایی پشتیبانی می‌شود.'));
 
+    /* Questionnaire files and personnel files live in separate tables.
+       Mixed into one list they were a row apart, and «حذف» on a personnel file
+       throws away the whole roster — too easy to hit by mistake. */
     var batches = App.state.importBatches || [];
-    if (batches.length) {
+    var kinds = [
+      { kind: 'questionnaire', title: 'فایل‌های پرسشنامه', key: 'batchesQ',
+        hint: 'حذف یک فایل پرسشنامه، فقط پاسخ‌های همان فایل را برمی‌دارد' },
+      { kind: 'employee', title: 'فایل‌های پرسنل', key: 'batchesE',
+        hint: 'حذف یک فایل پرسنل، رکوردهای پرسنلی همان فایل را برمی‌دارد' },
+      { kind: 'amounts', title: 'فایل‌های مبالغ', key: 'batchesA',
+        hint: 'مبالغی که از فایل وارد شده‌اند' }
+    ];
+
+    kinds.forEach(function (group) {
+      var rows = batches.filter(function (b) { return (b.kind || 'questionnaire') === group.kind; });
+      if (!rows.length) return;
       var grid = U.DataGrid({
-        title: 'فایل‌های وارد شده', stateKey: 'batches',
-        rows: batches.slice().reverse(),
+        title: group.title + ' (' + rows.length + ')', stateKey: group.key,
+        rows: rows.slice().reverse(),
         searchFields: ['fileName', 'sheetName'],
         pageSize: 50,
+        rowClass: function () { return group.kind === 'employee' ? 'row-employee-file' : ''; },
         columns: [
-          { key: 'fileName', label: 'نام فایل', width: '200px' },
-          { key: 'kind', label: 'نوع', render: function (r) {
-            return el('span', { class: 'chip ' + (r.kind === 'employee' ? 'info' : 'brand'),
-              text: r.kind === 'employee' ? 'پرسنل' : 'پرسشنامه' });
-          } },
+          { key: 'fileName', label: 'نام فایل', width: '220px' },
           { key: 'sheetName', label: 'شیت' },
           { key: 'headerRow', label: 'ردیف عنوان', type: 'int' },
           { key: 'accepted', label: 'رکورد پذیرفته', type: 'int' },
@@ -6781,8 +6870,12 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
           } }
         ]
       });
-      main.appendChild(grid.node);
-    }
+      var card = el('div', {});
+      card.appendChild(el('div', { class: 'small muted', style: 'margin:14px 0 4px' },
+        [document.createTextNode(group.hint)]));
+      card.appendChild(grid.node);
+      main.appendChild(card);
+    });
 
     var dups = Store.detectQuestionnaireDuplicates(App.state.questionnaires);
     if (dups.length) {
@@ -7142,7 +7235,30 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
    * reported rather than silently skipped.
    */
   function commitAmounts(parsed) {
-    var applied = 0, cleared = 0, missing = [], noComment = 0;
+    /* No amount column, no import. Without this the file looked accepted and
+       every matched person had their amount wiped, because an empty cell means
+       "back to the computed figure". */
+    var noAmountColumn = parsed.filter(function (p) {
+      return p.mapping.hodAdjustment === undefined && p.mapping.finalKaraneh === undefined;
+    });
+    if (noAmountColumn.length) {
+      U.modal({
+        title: 'ستون مبلغ پیدا نشد', size: 'narrow',
+        content: el('div', {}, [
+          el('p', {}, [document.createTextNode(
+            'در ' + (noAmountColumn.length === parsed.length ? 'این فایل' : 'یکی از فایل‌ها') +
+            ' ستونی که مبلغ را نگه دارد شناسایی نشد، بنابراین چیزی تغییر نکرد.')]),
+          el('p', { class: 'small muted' }, [document.createTextNode(
+            'سرستون مبلغ می‌تواند یکی از این‌ها باشد: «کارانه نهایی»، «مبلغ نهایی»، ' +
+            '«تغییرات معاون بخش»، «مبلغ» یا Final Karaneh. ' +
+            'ساده‌ترین راه، خروجی گرفتن از همین صفحه و پر کردن همان ستون است.')])
+        ]),
+        buttons: [{ label: 'بستن', kind: 'primary' }]
+      });
+      return;
+    }
+
+    var applied = 0, cleared = 0, missing = [], noComment = 0, ineligible = 0;
     parsed.forEach(function (p) {
       p.records.forEach(function (rec) {
         var id = String(rec.employeeId || '');
@@ -7168,6 +7284,9 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
         q.hodAdjustment = value;
         q.hodComment = comment || (value === null ? '' : 'ورود از فایل ' + (p.fileName || ''));
         if (value === null) cleared++; else applied++;
+        /* Below the threshold the engine pays nothing, so a figure typed for
+           such a person is stored but changes no payout. Say so. */
+        if (value !== null && !row.eligible) ineligible++;
       });
       recordBatch(p, 'amounts', p.records.length);
     });
@@ -7176,6 +7295,10 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
     var check = Engine.validateBudget(recalc());
     var msg = U.int(applied) + ' مبلغ اعمال شد' +
       (cleared ? ' و ' + U.int(cleared) + ' مورد پاک شد' : '') + '.';
+    if (ineligible) {
+      msg += ' ' + U.int(ineligible) + ' نفر واجد شرایط نیستند (امتیاز زیر حد نصاب)، ' +
+             'مبلغشان ثبت شد اما در پرداخت اثری ندارد.';
+    }
     if (missing.length) {
       msg += ' ' + U.int(missing.length) + ' شمارهٔ پرسنلی در این دوره پیدا نشد: ' +
              missing.slice(0, 5).join('، ') + (missing.length > 5 ? ' …' : '');
@@ -7196,7 +7319,7 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
         var id = String(r.employeeId || '');
         var at = id ? byId[id] : undefined;
         if (at === undefined) {
-          r._key = 'q' + (App._keySeq = (App._keySeq || 0) + 1);
+          r._key = nextRecordKey();
           App.state.questionnaires.push(r);
           if (id) byId[id] = App.state.questionnaires.length - 1;
           added++;
@@ -7248,7 +7371,10 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
   }
 
   function removeBatch(batch) {
-    U.confirm('تمام رکوردهای وارد شده از فایل «' + batch.fileName + '» حذف شوند؟',
+    var what = batch.kind === 'employee' ? 'رکوردهای پرسنلی'
+             : batch.kind === 'amounts' ? 'مبالغ' : 'پاسخ‌های پرسشنامه';
+    U.confirm(what + ' واردشده از فایل «' + batch.fileName + '» حذف شوند؟ (' +
+      U.int(batch.accepted || 0) + ' رکورد)',
       { danger: true, confirmLabel: 'حذف' }).then(function (ok) {
       if (!ok) return;
       var before = App.state.questionnaires.length;
@@ -7385,7 +7511,8 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
       el('span', {}, [btn('طراحی پرسشنامه', function () { go('designer'); }, 'sm ghost')])
     ]));
 
-    main.appendChild(U.card('ویرایش گروهی پاسخ‌ها', bulkAnswerPanel(),
+    var bulkPanel = bulkAnswerPanel();
+    main.appendChild(U.card('ویرایش گروهی پاسخ‌ها', bulkPanel,
       { hint: 'روی همان ردیف‌هایی اعمال می‌شود که جدول پایین با فیلترهای فعلی نشان می‌دهد' }));
 
     var answerOptions = Object.keys(cfg.answerScale);
@@ -7439,6 +7566,7 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
 
     var grid = U.DataGrid({
       title: 'مجموعه یکپارچه پرسشنامه‌ها', stateKey: 'answers',
+      onRender: function () { if (bulkPanel.refresh) bulkPanel.refresh(); },
       rows: App.result.rows,
       sortKey: 'employeeId',
       searchFields: ['employeeId', 'fullName', 'division', 'positionTitle'],
@@ -7636,7 +7764,7 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
             jobLevel: (master && master.jobLevel) || '',
             sourceFile: 'ثبت سیستمی',
             importedAt: new Date().toISOString(),
-            _key: 'q' + (App._keySeq = (App._keySeq || 0) + 1)
+            _key: nextRecordKey()
           };
           App.state.questionnaires.push(rec);
           Store.audit(App.state, {
@@ -7707,13 +7835,21 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
     fieldSel.addEventListener('change', refreshValues);
     refreshValues();
 
+    /* Off by default: the common job is changing answers that are already
+       there. Left on, the panel silently targeted nothing on a fully answered
+       sheet and the button looked broken. */
     var onlyBlank = el('input', { type: 'checkbox' });
-    onlyBlank.checked = true;
+    onlyBlank.checked = false;
 
     var count = el('span', { class: 'small muted' });
-    function targets() {
+
+    function visibleRows() {
       var grid = App.grids.questionnaires;
-      var rows = grid ? grid.getVisibleRows() : App.result.rows;
+      return grid ? grid.getVisibleRows() : App.result.rows;
+    }
+
+    function targets() {
+      var rows = visibleRows();
       if (fieldSel.value === '__impactApproved') {
         return rows.filter(function (r) { return r.specialImpactClaimed; });
       }
@@ -7724,8 +7860,25 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
         return v === undefined || v === null || v === '';
       });
     }
+
+    /** Why the target set is empty — a count of zero on its own explains nothing. */
+    function emptyReason() {
+      if (!visibleRows().length) return 'جدول پایین با فیلترهای فعلی ردیفی نشان نمی‌دهد.';
+      if (fieldSel.value === '__impactApproved') {
+        return 'در ردیف‌های نمایش‌داده‌شده کسی اثرگذاری ویژه ادعا نکرده است.';
+      }
+      if (onlyBlank.checked) {
+        return 'در ردیف‌های نمایش‌داده‌شده، این ستون جای خالی ندارد — تیک «فقط خانه‌های خالی» را بردارید.';
+      }
+      return 'ردیفی برای تغییر وجود ندارد.';
+    }
+
     function refreshCount() {
-      count.textContent = U.int(targets().length) + ' ردیف هدف این تغییر است.';
+      var n = targets().length;
+      count.textContent = n
+        ? U.int(n) + ' ردیف هدف این تغییر است.'
+        : emptyReason();
+      count.className = 'small ' + (n ? 'muted' : 'warn-text');
     }
     onlyBlank.addEventListener('change', refreshCount);
     fieldSel.addEventListener('change', refreshCount);
@@ -7738,16 +7891,22 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
       el('span', { text: 'فقط ردیف‌هایی که این ستون در آن‌ها خالی است' })]));
     box.appendChild(el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, [
       btn('اعمال روی ردیف‌های فیلترشده', function () {
-        applyBulkAnswers(fieldSel.value, valueSel.value, targets());
+        applyBulkAnswers(fieldSel.value, valueSel.value, targets(), emptyReason());
       }, 'primary'),
       count
     ]));
     refreshCount();
+    /* The table below is rebuilt after this panel; whenever it repaints — a
+       filter, a search, a page — it calls back so the count stays true. */
+    box.refresh = refreshCount;
     return box;
   }
 
-  function applyBulkAnswers(field, value, rows) {
-    if (!rows.length) { U.toast('ردیفی برای تغییر وجود ندارد.', 'warn'); return; }
+  function applyBulkAnswers(field, value, rows, reason) {
+    if (!rows.length) {
+      U.toast(reason || 'ردیفی برای تغییر وجود ندارد.', 'warn', 7000);
+      return;
+    }
     var isApproval = field === '__impactApproved';
     var realField = isApproval ? 'impactApproved' : field;
     var newValue = value === '' ? null : value;
@@ -8307,11 +8466,34 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
   ];
 
   var BULK_MODES = [
-    { key: 'fixed',   label: 'مبلغ ثابت برای هر نفر' },
-    { key: 'percent', label: 'درصدی از دریافتی محاسباتی هر نفر' },
-    { key: 'pool',    label: 'یک مبلغ کل، به نسبت امتیاز هر نفر' },
-    { key: 'clear',   label: 'حذف مبلغ‌های تعیین‌شده (بازگشت به محاسبه)' }
+    { key: 'fixed',   label: 'همه یک مبلغ یکسان بگیرند',
+      amountLabel: 'مبلغ هر نفر (ریال)',
+      say: function (n, amount) {
+        return 'هر ' + U.int(n) + ' نفر این گروه ' + U.money(amount) + ' ریال می‌گیرند.';
+      } },
+    { key: 'percent', label: 'درصدی از دریافتی محاسباتی هر نفر',
+      amountLabel: 'درصد (مثلاً ۱۲۰)',
+      say: function (n, amount) {
+        return 'دریافتی هر نفر ' + U.score(amount, 0) + '٪ مبلغ محاسباتی خودش می‌شود — ' +
+               'کسی که بیشتر گرفته، بیشتر می‌گیرد.';
+      } },
+    { key: 'pool',    label: 'یک مبلغ کل بین گروه، به نسبت امتیاز',
+      amountLabel: 'مبلغ کل گروه (ریال)',
+      say: function (n, amount) {
+        return U.money(amount) + ' ریال بین ' + U.int(n) +
+               ' نفر به نسبت امتیاز کل هرکس تقسیم می‌شود.';
+      } },
+    { key: 'clear',   label: 'حذف مبلغ‌های دستی و بازگشت به محاسبه',
+      amountLabel: '—',
+      say: function (n) {
+        return 'مبلغ دستی ' + U.int(n) + ' نفر پاک می‌شود و دریافتی آن‌ها دوباره از ' +
+               'محاسبه می‌آید.';
+      } }
   ];
+
+  function bulkMode(key) {
+    return BULK_MODES.filter(function (m) { return m.key === key; })[0] || BULK_MODES[0];
+  }
 
   function bulkTargetRows(field, value) {
     var rows = App.result.rows.filter(function (r) {
@@ -8530,9 +8712,12 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
       return el('option', { value: m.key, text: m.label });
     }));
     var amountInput = U.moneyInput({ style: 'width:100%' });
+    var amountLabel = el('span', { text: bulkMode(state.mode).amountLabel });
     var reason = el('input', { type: 'text', class: 'editable', style: 'width:100%',
       placeholder: 'دلیل این تغییر گروهی — الزامی' });
+    var explain = el('div', { class: 'small', style: 'margin:4px 0 0;color:var(--text-2)' });
     var preview = el('div', { class: 'small', style: 'margin:10px 0' });
+    var whoBox = el('div', { class: 'small muted', style: 'margin:6px 0 0' });
 
     function refreshValues() {
       U.clear(valueSel);
@@ -8550,31 +8735,63 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
 
     function renderPreview() {
       U.clear(preview);
+      U.clear(whoBox);
+      U.clear(explain);
+
+      var mode = bulkMode(state.mode);
+      amountLabel.textContent = mode.amountLabel;
+      amountInput.disabled = state.mode === 'clear';
+
       var rows = bulkTargetRows(state.field, state.value);
       if (!rows.length) {
-        preview.appendChild(el('span', { class: 'muted', text: 'هنوز گروهی انتخاب نشده است.' }));
+        preview.appendChild(el('span', { class: 'muted',
+          text: state.field === '__filtered'
+            ? 'جدول پرداخت با فیلترهای فعلی ردیفی نشان نمی‌دهد.'
+            : 'هنوز گروهی انتخاب نشده است.' }));
         return;
       }
+
+      /* Who «the group» actually is, by name, so nothing is applied blind. */
+      var names = rows.slice(0, 4).map(function (r) { return r.fullName || r.employeeId; });
+      whoBox.appendChild(document.createTextNode(
+        'این گروه: ' + names.join('، ') +
+        (rows.length > names.length ? ' و ' + U.int(rows.length - names.length) + ' نفر دیگر' : '')));
+
+      if (state.mode !== 'clear' && !(Number(state.amount) > 0)) {
+        explain.appendChild(el('b', { text: 'عدد را وارد کنید تا اثرش را ببینید.' }));
+        return;
+      }
+      explain.appendChild(el('b', { text: mode.say(rows.length, Number(state.amount) || 0) }));
+
       var plan = bulkPlan(rows, state.mode, state.amount);
-      var before = 0, after = 0;
+      var before = 0, after = 0, unchanged = 0;
       plan.forEach(function (p) {
         before += p.row.finalKaraneh || 0;
         after += p.value === null ? (p.row.initialAllocation || 0) : p.value;
+        var now = p.row.isOverridden ? p.row.hodAdjustment : null;
+        if (String(now === null ? '' : now) ===
+            String(p.value === null ? '' : Math.round(p.value))) unchanged++;
       });
+
       preview.appendChild(el('div', {}, [
-        el('b', { text: U.int(rows.length) + ' نفر' }),
-        document.createTextNode('  •  مجموع فعلی: '),
+        el('b', { text: U.int(rows.length - unchanged) + ' نفر تغییر می‌کنند' }),
+        unchanged ? el('span', { class: 'muted',
+          text: '  (' + U.int(unchanged) + ' نفر همین‌الان همین مبلغ را دارند)' }) : null,
+        document.createTextNode('  •  مجموع این گروه: '),
         U.bidi(U.money(before)),
-        document.createTextNode('  →  پس از اعمال: '),
+        document.createTextNode('  →  '),
         el('b', {}, [U.bidi(U.money(after))])
-      ]));
+      ].filter(Boolean)));
+
       var delta = after - before;
-      preview.appendChild(el('div', { class: 'muted', style: 'margin-top:3px' }, [
-        document.createTextNode(delta >= 0
-          ? 'این مبلغ از سهم سایر افراد کم می‌شود: '
-          : 'این مقدار به سهم سایر افراد اضافه می‌شود: '),
-        U.bidi(U.money(Math.abs(delta)))
-      ]));
+      if (Math.abs(delta) >= 1) {
+        preview.appendChild(el('div', { class: 'muted', style: 'margin-top:3px' }, [
+          document.createTextNode(delta > 0
+            ? 'این اختلاف از سهم سایر افراد خارج این گروه کم می‌شود: '
+            : 'این اختلاف به سهم سایر افراد خارج این گروه اضافه می‌شود: '),
+          U.bidi(U.money(Math.abs(delta)))
+        ]));
+      }
     }
 
     targetSel.addEventListener('change', function () {
@@ -8583,7 +8800,6 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
     valueSel.addEventListener('change', function () { state.value = valueSel.value; renderPreview(); });
     modeSel.addEventListener('change', function () {
       state.mode = modeSel.value;
-      amountInput.disabled = state.mode === 'clear';
       renderPreview();
     });
     amountInput.addEventListener('input', function () {
@@ -8594,11 +8810,12 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
       el('label', { class: 'field' }, [el('span', { text: 'گروه بر اساس' }), targetSel]),
       el('label', { class: 'field' }, [el('span', { text: 'مقدار گروه' }), valueSel]),
       el('label', { class: 'field' }, [el('span', { text: 'نحوهٔ تعیین' }), modeSel]),
-      el('label', { class: 'field' }, [
-        el('span', { text: 'عدد (ریال یا درصد)' }), amountInput
-      ])
+      el('label', { class: 'field' }, [amountLabel, amountInput])
     ]));
-    box.appendChild(el('label', { class: 'field' }, [el('span', { text: 'دلیل' }), reason]));
+    box.appendChild(explain);
+    box.appendChild(whoBox);
+    box.appendChild(el('label', { class: 'field', style: 'margin-top:10px' },
+      [el('span', { text: 'دلیل' }), reason]));
     box.appendChild(preview);
     box.appendChild(el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, [
       btn('اعمال روی گروه', function () {
@@ -8641,10 +8858,13 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
       });
       save();
       var check = Engine.validateBudget(recalc());
+      var skipped = plan.length - changed;
+      var msg = U.int(changed) + ' نفر از ' + U.int(plan.length) + ' نفر گروه تغییر کردند' +
+                (skipped ? '؛ ' + U.int(skipped) + ' نفر از قبل همین مبلغ را داشتند' : '') + '.';
       if (!check.ok) {
-        U.toast(check.problems[0].message, 'err', 8000);
+        U.toast(check.problems[0].message, 'err', 9000);
       } else {
-        U.toast(U.int(changed) + ' مبلغ به‌صورت گروهی ثبت شد.', 'ok', 5000);
+        U.toast(msg, 'ok', 6000);
       }
     });
   }
@@ -9771,7 +9991,7 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
       if (!ok) return;
       Store.clear().then(function () {
         App.state = freshState();
-        App._keySeq = 0;
+        resetRecordKeys();
         invalidateEmployeeIndex();
         save().then(function () { recalc(); go('dashboard'); U.toast('همه داده‌ها پاک شد.', 'ok'); });
       });
@@ -9818,7 +10038,7 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
           sheetName: 'پرسشنامه کارانه تیمی', headerRow: 6, headers: [], mapping: {},
           mappedCount: 13, unmapped: [], warnings: [], accepted: s.employees.length, importedAt: now
         }];
-        App._keySeq = s.employees.length;
+        repairRecordKeys();
         Store.audit(App.state, {
           entity: 'process', field: 'sample data', oldValue: '',
           newValue: s.employees.length + ' رکورد',
@@ -10637,6 +10857,11 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
   /* Test hook: the roster a questionnaire template is built from. */
   window.__templateRoster = function (filter) { return templateRoster(filter); };
 
+  /* Test hooks for the record-key repair. */
+  window.__repairKeys = function () { return repairRecordKeys(); };
+  window.__byKey = function (k) { return questionnaireByKey(k); };
+  window.__editField = function (q, f, v, r) { return editField(q, f, v, r); };
+
   /* Test hook: the group an employee falls into for a given field. */
   window.__groupKey = function (employee, field) { return groupKeyFor(employee, field); };
 
@@ -11209,7 +11434,7 @@ window.SAMPLE_DATA = {"config":{"budget":100000000000.0,"gradeImpactFactor":0.0,
               App.state = data;
               if (!App.state.config) App.state.config = defaultConfig();
               if (!App.state.columnMappings) App.state.columnMappings = cloneMappings();
-              App._keySeq = App.state.questionnaires.length;
+              repairRecordKeys();
               invalidateEmployeeIndex();
               save().then(function () { recalc(); go('dashboard'); U.toast('بازیابی انجام شد.', 'ok'); });
             });

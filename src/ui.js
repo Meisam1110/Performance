@@ -541,6 +541,11 @@
       if (keepScroll) {
         requestAnimationFrame(function () { wrap.scrollTop = keepScroll; });
       }
+
+      /* Anything outside the table that describes what it is showing — a bulk
+         edit panel counting its targets, say — is told after every repaint,
+         because filtering here changes what those tools would act on. */
+      if (opts.onRender) opts.onRender(rows, state);
     }
 
     wrap.addEventListener('scroll', function () {

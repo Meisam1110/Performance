@@ -162,7 +162,8 @@
        and only the amounts import reads it as a figure to apply. */
     finalKaraneh: {
       label: 'کارانه نهایی', group: 'both',
-      synonyms: ['کارانه نهایی', 'مبلغ نهایی', 'final karaneh', 'karaneh']
+      synonyms: ['کارانه نهایی', 'مبلغ نهایی', 'final karaneh', 'karaneh',
+                 'مبلغ کارانه', 'مبلغ', 'amount', 'karaneh amount', 'رقم']
     },
     hodComment: {
       label: 'توضیح معاون بخش', group: 'both',
