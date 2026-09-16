@@ -609,6 +609,55 @@ dl.kv dd { margin: 0; font-weight: 700; }
 .mailrow .who { min-width: 150px; font-weight: 700; font-size: 12.5px; }
 .mailrow input { flex: 1; min-width: 220px; }
 
+/* ======================================================== narrow viewports
+   The window is not always a desk monitor: the head of a division opens this
+   on a laptop beside a meeting, and sometimes on a tablet. Everything below
+   keeps the same screens working as the width shrinks — nothing is hidden
+   that carries a number, and nothing needs horizontal page scrolling. */
+@media (max-width: 1100px) {
+  .brandbar .title { font-size: 13px; }
+  .main { padding: 14px 14px 40px; }
+  .kpi-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 9px; }
+  .form-grid { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+}
+
+@media (max-width: 900px) {
+  /* The rail becomes a strip above the content rather than a column beside
+     it, so the table keeps the full width. */
+  .shell { flex-direction: column; }
+  .rail {
+    width: auto; flex: 0 0 auto; order: -1;   /* above the content, not after it */
+    border-inline-end: 0; border-bottom: 1px solid var(--border);
+    max-height: 118px; padding: 10px 14px;
+  }
+  .rail h3, .rail .sub { display: inline-block; margin: 0 8px 6px 0; }
+  .rail .ringwrap { display: none; }
+  .rail .steplist { display: flex; gap: 16px; overflow-x: auto; padding-bottom: 4px; }
+  .rail .step { flex: 0 0 auto; padding: 4px 0; }
+  .rail .step + .step::before { display: none; }
+  .rail .railnote { display: none; }
+  .main { overflow-y: visible; }
+  .shell { overflow-y: auto; }
+  .bars-grid { grid-template-columns: 1fr; }
+  .view-head { flex-direction: column; align-items: stretch; gap: 10px; }
+  .view-head .actions { flex-wrap: wrap; }
+  .table-toolbar { padding: 8px 9px; }
+  .table-toolbar input[type="search"] { min-width: 0; flex: 1 1 100%; }
+  .table-toolbar select { flex: 1 1 42%; min-width: 0; }
+  .strip { padding: 0 10px; }
+  .strip .cell { padding: 0 11px; }
+  .dl-tray { width: auto; inset-inline: 10px; bottom: 10px; }
+}
+
+@media (max-width: 640px) {
+  .brandbar { gap: 8px; padding: 0 10px; }
+  .brandbar .period { display: none; }
+  .kpi-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); }
+  .form-grid { grid-template-columns: 1fr; }
+  .modal .box { width: auto; inset-inline: 8px; }
+  .card > h2 { flex-wrap: wrap; }
+}
+
 @media print {
   .brandbar, .navbar, .rail, .strip, .view-head .actions, .table-toolbar { display: none !important; }
   .main { overflow: visible; padding: 0; }

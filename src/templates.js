@@ -125,6 +125,17 @@
     return (config.questions || []).filter(function (q) { return q.impact; })[0] || null;
   }
 
+  /**
+   * The short code a question carries as a column heading.
+   *
+   * Spelled out rather than "Q1": a manager reading a file full of one-letter
+   * codes has to be told what they mean, and the column is wide enough.
+   */
+  function questionCode(q, index) {
+    var digits = String(q && q.id ? q.id : '').match(/\d+/);
+    return 'Question' + (digits ? digits[0] : String((index || 0) + 1));
+  }
+
   /** Questions that appear as answer columns on the template. */
   function answerQuestions(config) {
     return (config.questions || []).filter(function (q) { return !q.impact; });
@@ -269,10 +280,10 @@
 
     var impact = impactQuestion(config);
     var columns = IDENTITY.slice();
-    answerQuestions(config).forEach(function (q) {
+    answerQuestions(config).forEach(function (q, qi) {
       columns.push({
         key: q.id,
-        label: q.id.toUpperCase(),
+        label: questionCode(q, qi),
         description: (q.domain ? q.domain + ' — ' : '') + q.text,
         width: 17,
         answer: true,
@@ -389,8 +400,9 @@
     aoa.push([]);
     aoa.push(['وزن هر سؤال در امتیاز عملکرد']);
     aoa.push(['کد', 'حوزه', 'وزن', 'در محاسبه']);
-    (config.questions || []).forEach(function (q) {
-      aoa.push([q.id.toUpperCase(), q.domain || '', q.weight === undefined ? 1 : q.weight,
+    (config.questions || []).forEach(function (q, qi) {
+      aoa.push([q.impact ? 'اثرگذاری ویژه' : questionCode(q, qi),
+                q.domain || '', q.weight === undefined ? 1 : q.weight,
                 q.impact ? 'امتیاز ویژه' : (q.scored === false ? 'خیر' : 'بله')]);
     });
     aoa.push([]);
@@ -450,6 +462,7 @@
     QUESTIONNAIRE_SHEET: QUESTIONNAIRE_SHEET,
     PAYROLL_COLUMNS: PAYROLL_COLUMNS,
     MANAGER_LAYERS: MANAGER_LAYERS,
+    questionCode: questionCode,
     managerFor: managerFor,
     blankLayer: blankLayer,
     describe: describe,

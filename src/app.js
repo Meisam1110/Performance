@@ -231,7 +231,8 @@
 
       var digits = String(q.id).match(/\d+/);
       var n = digits ? digits[0] : String(i + 1);
-      var codes = [q.id, 'q' + n, 'س' + n, 'سوال ' + n, 'سؤال ' + n, 'question ' + n];
+      var codes = [q.id, 'q' + n, 'س' + n, 'سوال ' + n, 'سؤال ' + n,
+                   'question ' + n, 'question' + n, 'سؤال شماره ' + n];
       var entry = maps[q.id];
       if (!entry) {
         entry = maps[q.id] = {
@@ -275,6 +276,16 @@
     }
     if (!cfg.specialImpactQuestion) {
       cfg.specialImpactQuestion = Engine.DEFAULT_CONFIG.specialImpactQuestion;
+    }
+    /* A job level added to the product after a file was saved — 2H, say —
+       must appear in that file's ladder too, or its people are reported as
+       having an unknown level. Existing values are never overwritten. */
+    cfg.gradeMap = cfg.gradeMap || {};
+    Object.keys(Engine.DEFAULT_CONFIG.gradeMap).forEach(function (jl) {
+      if (cfg.gradeMap[jl] === undefined) cfg.gradeMap[jl] = Engine.DEFAULT_CONFIG.gradeMap[jl];
+    });
+    if (cfg.requireImpactApproval === undefined) {
+      cfg.requireImpactApproval = Engine.DEFAULT_CONFIG.requireImpactApproval;
     }
     delete cfg.scoredQuestions;
   }
@@ -800,12 +811,37 @@
   }
   App.go = go;
 
+  /**
+   * Repaint the current screen.
+   *
+   * Every edit recalculates and repaints, so the reader's position has to
+   * survive it: staying on the same screen keeps the scroll offset, and the
+   * tables keep their own filters and sort through `stateKey`. Without this,
+   * ticking one checkbox threw you back to the top of the page.
+   */
   function renderView() {
     var main = document.getElementById('main');
     if (!main) return;
+    var shell = document.querySelector('.shell');
+    var sameView = App._paintedView === App.view;
+    var keepMain = sameView ? main.scrollTop : 0;
+    var keepShell = sameView && shell ? shell.scrollTop : 0;
+
     U.clear(main);
     var fn = VIEWS[App.view] || VIEWS.dashboard;
     fn(main);
+    App._paintedView = App.view;
+
+    if (keepMain || keepShell) {
+      /* Twice: the first frame has the layout, but charts and tables add their
+         height in a frame of their own, and a restore against a page that is
+         still short would be clamped to its bottom. */
+      var restore = function () {
+        if (keepMain) main.scrollTop = keepMain;
+        if (keepShell && shell) shell.scrollTop = keepShell;
+      };
+      requestAnimationFrame(function () { restore(); requestAnimationFrame(restore); });
+    }
   }
 
   /* There is no role switch any more: HR's file and the files it generates
@@ -1487,7 +1523,7 @@
    */
   function unifiedGrid(rows) {
     return U.DataGrid({
-      title: 'جدول یکپارچه کارانه',
+      title: 'جدول یکپارچه کارانه', stateKey: 'unified',
       rows: rows,
       sortKey: 'finalKaraneh', sortDir: 'desc',
       searchFields: ['employeeId', 'fullName', 'division', 'positionTitle', 'directManager'],
@@ -1707,7 +1743,7 @@
     }
 
     var grid = U.DataGrid({
-      title: 'اطلاعات پایه پرسنل',
+      title: 'اطلاعات پایه پرسنل', stateKey: 'employees',
       rows: App.state.employees,
       sortKey: 'employeeId',
       searchFields: ['employeeId', 'fullName', 'firstName', 'lastName', 'division', 'positionTitle', 'directManager'],
@@ -1914,7 +1950,7 @@
     var batches = App.state.importBatches || [];
     if (batches.length) {
       var grid = U.DataGrid({
-        title: 'فایل‌های وارد شده',
+        title: 'فایل‌های وارد شده', stateKey: 'batches',
         rows: batches.slice().reverse(),
         searchFields: ['fileName', 'sheetName'],
         pageSize: 50,
@@ -2148,7 +2184,7 @@
            say which question is missing from the design rather than leaving a
            bare code in a grey line. */
         var orphanAnswers = p.unmapped.filter(function (u) {
-          return /^\s*q\s*\d+\s*$/i.test(String(u.header || ''));
+          return /^\s*(q|question|س|سوال|سؤال)\s*\d+\s*$/i.test(String(u.header || ''));
         });
         if (orphanAnswers.length) {
           det.appendChild(U.alert('warn', 'پاسخ این ستون‌ها وارد نمی‌شود',
@@ -2534,7 +2570,7 @@
     }
 
     var grid = U.DataGrid({
-      title: 'مجموعه یکپارچه پرسشنامه‌ها',
+      title: 'مجموعه یکپارچه پرسشنامه‌ها', stateKey: 'answers',
       rows: App.result.rows,
       sortKey: 'employeeId',
       searchFields: ['employeeId', 'fullName', 'division', 'positionTitle'],
@@ -2993,7 +3029,7 @@
 
 
     var grid = U.DataGrid({
-      title: 'جدول پرداخت کارانه',
+      title: 'جدول پرداخت کارانه', stateKey: 'payment',
       rows: App.result.rows.filter(inScopeForRole),
       sortKey: 'finalKaraneh', sortDir: 'desc',
       searchFields: ['employeeId', 'fullName', 'division', 'positionTitle'],
@@ -3108,7 +3144,7 @@
         'واحدهای ' + roleScope().join('، ') + ' — ' + eligible.length + ' نفر قابل تعیین مبلغ.'));
     }
     var grid = U.DataGrid({
-      title: 'تعیین مبلغ توسط معاون بخش',
+      title: 'تعیین مبلغ توسط معاون بخش', stateKey: 'hod',
       rows: eligible,
       sortKey: 'initialAllocation', sortDir: 'desc',
       searchFields: ['employeeId', 'fullName', 'division', 'positionTitle'],
@@ -3615,7 +3651,7 @@
     }
 
     main.appendChild(U.DataGrid({
-      title: 'گزارش تغییرات',
+      title: 'گزارش تغییرات', stateKey: 'audit',
       rows: App.state.auditLog.slice().reverse(),
       searchFields: ['employeeId', 'employeeName', 'field', 'reason', 'user'],
       facets: [
@@ -3936,25 +3972,33 @@
     var gradeBox = el('div', {});
     var previewBox = el('div', {});
 
+    /* Fractions below one are gone: the ladder starts at a full unit of grade
+       effect, and zero — grade switched off — has its own button. */
+    var GRADE_MIN = 1, GRADE_MAX = 3, GRADE_STEP = 0.25;
+
     var factorInput = el('input', {
-      type: 'number', class: 'editable', step: '0.05', min: '0',
+      type: 'number', class: 'editable', step: String(GRADE_STEP), min: '0',
       style: 'width:120px;font-size:15px;font-weight:700'
     });
     factorInput.value = cfg.gradeImpactFactor;
 
     var slider = el('input', {
-      type: 'range', min: '0', max: '2', step: '0.05', style: 'flex:1;min-width:180px'
+      type: 'range', min: String(GRADE_MIN), max: String(GRADE_MAX),
+      step: String(GRADE_STEP), style: 'flex:1;min-width:180px'
     });
-    slider.value = cfg.gradeImpactFactor;
+    slider.value = Math.max(GRADE_MIN, Number(cfg.gradeImpactFactor) || GRADE_MIN);
 
     /* Pending value: the preview follows the control live, but nothing is
        written until the user commits. */
     var pending = Number(cfg.gradeImpactFactor);
 
     function setPending(v) {
-      pending = isFinite(v) && v >= 0 ? v : 0;
+      if (!isFinite(v) || v < 0) v = 0;
+      /* Either off, or at least a full unit — nothing in between. */
+      if (v > 0 && v < GRADE_MIN) v = GRADE_MIN;
+      pending = v;
       factorInput.value = pending;
-      slider.value = Math.min(2, pending);
+      slider.value = Math.min(GRADE_MAX, Math.max(GRADE_MIN, pending));
       renderGradePreview();
     }
     factorInput.addEventListener('input', function () { setPending(Number(factorInput.value)); });
@@ -4073,10 +4117,11 @@
       factorInput,
       slider,
       btn('اعمال', function () { commitFactor(); }, 'primary'),
-      btn('صفر (مطابق فایل مرجع)', function () { setPending(0); }, 'sm')
+      btn('بدون تأثیر گرید (۰)', function () { setPending(0); }, 'sm')
     ]));
     gradeBox.appendChild(el('div', { class: 'small muted', style: 'margin-bottom:12px' },
-      [document.createTextNode('مقادیر متداول: ۰ (بی‌اثر) · ۰٫۲۵ (اثر ملایم) · ۰٫۵ (اثر متوسط) · ۱ (اثر کامل)')]));
+      [document.createTextNode('مقادیر متداول: ۰ (بی‌اثر، مطابق فایل مرجع) · ۱ (اثر کامل) · ' +
+        '۱٫۵ و ۲ (اثر تشدیدشده). ضریب کسری کمتر از ۱ پذیرفته نمی‌شود.')]));
     gradeBox.appendChild(previewBox);
     renderGradePreview();
 

@@ -239,19 +239,43 @@
    *             value(row), render(row), className(row), sortValue(row) }]
    * type drives alignment and formatting: 'money' | 'score' | 'int' | 'text'
    * ====================================================================*/
+  /**
+   * What a table remembers between renders.
+   *
+   * Every edit recalculates and repaints the whole view, so without this a
+   * filter, a sort or a scroll position would be thrown away on each keystroke
+   * — the table would jump back to the top of an unfiltered list. Keyed by the
+   * table's `stateKey`, this outlives the DOM the table is rebuilt into.
+   */
+  var GRID_MEMORY = {};
+
   function DataGrid(opts) {
+    var memory = opts.stateKey
+      ? (GRID_MEMORY[opts.stateKey] = GRID_MEMORY[opts.stateKey] || {})
+      : {};
+
     var state = {
       columns: opts.columns,
       rows: opts.rows || [],
-      sortKey: opts.sortKey || null,
-      sortDir: opts.sortDir || 'asc',
-      filter: '',
-      facets: {},                      // key -> selected value
-      hidden: {},
-      page: 0,
-      pageSize: opts.pageSize || 250
+      sortKey: memory.sortKey !== undefined ? memory.sortKey : (opts.sortKey || null),
+      sortDir: memory.sortDir || opts.sortDir || 'asc',
+      filter: memory.filter || '',
+      facets: memory.facets || {},     // key -> selected value
+      hidden: memory.hidden || {},
+      page: memory.page || 0,
+      pageSize: opts.pageSize || 250,
+      scrollTop: memory.scrollTop || 0
     };
-    opts.columns.forEach(function (c) { if (c.hidden) state.hidden[c.key] = true; });
+    if (!memory.hidden) {
+      opts.columns.forEach(function (c) { if (c.hidden) state.hidden[c.key] = true; });
+    }
+
+    function remember() {
+      if (!opts.stateKey) return;
+      memory.sortKey = state.sortKey; memory.sortDir = state.sortDir;
+      memory.filter = state.filter; memory.facets = state.facets;
+      memory.hidden = state.hidden; memory.page = state.page;
+    }
 
     var root = el('div', { class: 'card' });
     var head = el('h2', {}, [
@@ -270,13 +294,17 @@
     /* -- toolbar ------------------------------------------------------- */
     var search = el('input', {
       type: 'search', placeholder: 'جستجو در نام، شماره پرسنلی، واحد…',
-      style: 'min-width:250px', oninput: function () { state.filter = this.value; state.page = 0; render(); }
+      style: 'min-width:250px',
+      oninput: function () { state.filter = this.value; state.page = 0; remember(); render(); }
     });
+    search.value = state.filter;
     toolbar.appendChild(search);
 
     (opts.facets || []).forEach(function (f) {
       var sel = el('select', {
-        onchange: function () { state.facets[f.key] = this.value; state.page = 0; render(); }
+        onchange: function () {
+          state.facets[f.key] = this.value; state.page = 0; remember(); render();
+        }
       }, [el('option', { value: '', text: f.label })]);
       sel.dataset.facet = f.key;
       toolbar.appendChild(sel);
@@ -297,7 +325,7 @@
         var cb = el('input', { type: 'checkbox' });
         cb.checked = !state.hidden[c.key];
         cb.addEventListener('change', function () {
-          state.hidden[c.key] = !cb.checked; render();
+          state.hidden[c.key] = !cb.checked; remember(); render();
         });
         body.appendChild(el('label', { class: 'checkline' }, [cb, el('span', { text: c.label })]));
       });
@@ -367,6 +395,9 @@
 
     /* -- render -------------------------------------------------------- */
     function render() {
+      /* Repainting must not move the reader: the body is rebuilt in place, so
+         its scroll offset is taken before and put back after. */
+      var keepScroll = wrap.scrollTop || state.scrollTop || 0;
       var rows = filtered();
       var cols = visibleColumns();
 
@@ -423,6 +454,7 @@
           onclick: function () {
             if (state.sortKey === c.key) state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
             else { state.sortKey = c.key; state.sortDir = c.type && c.type !== 'text' ? 'desc' : 'asc'; }
+            remember();
             render();
           }
         }, [
@@ -490,17 +522,31 @@
         var bar = el('div', { class: 'table-toolbar pagebar' }, [
           el('button', {
             class: 'btn sm', text: '‹ قبلی', disabled: state.page === 0 ? 'disabled' : null,
-            onclick: function () { state.page--; render(); wrap.scrollTop = 0; }
+            onclick: function () { state.page--; remember(); render(); wrap.scrollTop = 0; }
           }),
           el('span', { class: 'small', text: 'صفحه ' + (state.page + 1) + ' از ' + pages }),
           el('button', {
             class: 'btn sm', text: 'بعدی ›', disabled: state.page >= pages - 1 ? 'disabled' : null,
-            onclick: function () { state.page++; render(); wrap.scrollTop = 0; }
+            onclick: function () { state.page++; remember(); render(); wrap.scrollTop = 0; }
           })
         ]);
         root.appendChild(bar);
       }
+
+      /* The node may not be in the document yet on the first render — setting
+         scrollTop on a detached element does nothing — so the offset is put
+         back once the browser has laid it out. */
+      state.scrollTop = keepScroll;
+      if (opts.stateKey) memory.scrollTop = keepScroll;
+      if (keepScroll) {
+        requestAnimationFrame(function () { wrap.scrollTop = keepScroll; });
+      }
     }
+
+    wrap.addEventListener('scroll', function () {
+      state.scrollTop = wrap.scrollTop;
+      if (opts.stateKey) memory.scrollTop = wrap.scrollTop;
+    });
 
     render();
 

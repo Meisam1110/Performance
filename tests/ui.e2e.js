@@ -408,7 +408,7 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   var previewOnly = await page.evaluate(function () {
     var before = window.App.state.config.gradeImpactFactor;
     var slider = document.querySelector('#main input[type="range"]');
-    slider.value = '0.5';
+    slider.value = '1.5';
     slider.dispatchEvent(new Event('input', { bubbles: true }));
     return { before: before, after: window.App.state.config.gradeImpactFactor,
              previewText: document.querySelector('#main .alert') ?
@@ -422,7 +422,7 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   /* Committing changes the distribution and still reconciles. */
   var committed = await page.evaluate(function () {
     var slider = document.querySelector('#main input[type="range"]');
-    slider.value = '0.5';
+    slider.value = '1.5';
     slider.dispatchEvent(new Event('input', { bubbles: true }));
     var apply = Array.prototype.slice.call(document.querySelectorAll('#main button'))
       .filter(function (b) { return b.textContent.trim() === 'اعمال'; })[0];
@@ -435,7 +435,16 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
       }).length
     };
   });
-  check('applying the factor commits it', committed.factor === 0.5, String(committed.factor));
+  check('applying the factor commits it', committed.factor === 1.5, String(committed.factor));
+  var lifted = await page.evaluate(function () {
+    /* The grade card is the one holding the slider. */
+    var card = document.querySelector('#main input[type="range"]').closest('.card');
+    var input = card.querySelector('input[type="number"]');
+    input.value = '0.5';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return Number(input.value);
+  });
+  check('a fraction below one is lifted to a whole unit', lifted === 1, String(lifted));
   check('grade now contributes to the score', committed.gradeImpacted > 90,
     committed.gradeImpacted + ' employees');
   check('budget still reconciles with grade switched on',
@@ -473,6 +482,66 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
     window.App.state.employees[0].jobLevel = '3H';
     window.App.recalc();
   });
+
+  console.log('\n== THE PAGE HOLDS ITS PLACE ==');
+  await page.evaluate(function () { window.App.go('questionnaires'); });
+  await page.waitForSelector('#main .table-wrap');
+  var held = await page.evaluate(function () {
+    var sel = document.querySelector('#main .table-toolbar select');
+    var pick = sel.options[1] ? sel.options[1].value : '';
+    sel.value = pick;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    /* Scroll as far as the filtered list actually allows, so the check is
+       about keeping the position rather than about list length. */
+    var wrap = document.querySelector('#main .table-wrap');
+    var want = Math.min(220, wrap.scrollHeight - wrap.clientHeight);
+    wrap.scrollTop = want;
+    return new Promise(function (done) {
+      setTimeout(function () {
+        /* An ordinary edit: recalculates and repaints the whole screen. */
+        window.App.state.questionnaires[0].q1 = 'زیاد';
+        window.App.recalc();
+        setTimeout(function () {
+          var sel2 = document.querySelector('#main .table-toolbar select');
+          done({ wanted: pick, facet: sel2.value, want: want,
+                 scroll: document.querySelector('#main .table-wrap').scrollTop });
+        }, 400);
+      }, 250);
+    });
+  });
+  check('a filter survives an edit', held.facet === held.wanted && held.wanted !== '',
+    held.facet + ' vs ' + held.wanted);
+  check('the table does not jump back to the top',
+    held.want > 0 && held.scroll === held.want, held.scroll + ' of ' + held.want);
+  await page.evaluate(function () {
+    var sel = document.querySelector('#main .table-toolbar select');
+    sel.value = '';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('#main .table-wrap').scrollTop = 0;
+  });
+  await page.waitForTimeout(250);
+
+  console.log('\n== RESPONSIVE LAYOUT ==');
+  for (var w of [1000, 820, 560]) {
+    await page.setViewportSize({ width: w, height: 860 });
+    await page.waitForTimeout(350);
+    var fit = await page.evaluate(function () {
+      return { doc: document.documentElement.scrollWidth, win: window.innerWidth,
+               railTop: (function () {
+                 var r = document.querySelector('.rail');
+                 var m = document.getElementById('main');
+                 return r && m ? (r.getBoundingClientRect().top < m.getBoundingClientRect().top ? 'above' : 'beside') : '—';
+               }()) };
+    });
+    check('no horizontal overflow at ' + w + 'px', fit.doc <= fit.win + 1,
+      fit.doc + ' / ' + fit.win);
+    if (w <= 900) {
+      check('the progress rail moves above the content at ' + w + 'px',
+        fit.railTop === 'above', fit.railTop);
+    }
+  }
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.waitForTimeout(300);
 
   console.log('\n== IMPACT APPROVAL ==');
   var approval = await page.evaluate(function () {
@@ -561,8 +630,9 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   var tplRows = XLSX0.utils.sheet_to_json(tplWb.Sheets['پرسشنامه کارانه تیمی'],
     { header: 1, defval: null, blankrows: false });
   var codeRow = tplRows.filter(function (r) { return r[0] === 'شماره پرسنلی'; })[0];
-  check('template header row uses short question codes',
-    codeRow && codeRow.indexOf('Q1') !== -1 && codeRow.indexOf('Q4') !== -1,
+  check('template header row spells the question codes out',
+    codeRow && codeRow.indexOf('Question1') !== -1 && codeRow.indexOf('Question4') !== -1 &&
+    codeRow.indexOf('Q1') === -1,
     codeRow ? codeRow.slice(5, 11).join(',') : 'not found');
 
   /* A template cut from a different design must be refused. */
@@ -615,7 +685,8 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
     var cols = {};
     codes.forEach(function (c, i) { cols[c] = i; });
     for (var r = codeRow + 1; r < codeRow + 1 + roster.length; r++) {
-      ['Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6'].forEach(function (code, k) {
+      ['Question1', 'Question2', 'Question3', 'Question4', 'Question5', 'Question6']
+        .forEach(function (code, k) {
         if (cols[code] !== undefined) aoa[r][cols[code]] = k === 5 ? 'خیلی زیاد' : 'زیاد';
       });
     }
@@ -644,7 +715,7 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
     };
   });
   check('a sixth question gets its own template column',
-    sixth.codes.indexOf('Q6') !== -1, sixth.codes.join(','));
+    sixth.codes.indexOf('Question6') !== -1, sixth.codes.join(','));
   check('its column is claimed on import, not left unmapped',
     sixth.mappedQ6 !== undefined && sixth.unmapped.length === 0,
     'q6 → ' + sixth.mappedQ6 + ' | unmapped: ' + sixth.unmapped.join(','));
@@ -670,10 +741,10 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
     var txt = document.querySelector('.modal').textContent;
     return { unmapped: res.unmapped.map(function (u) { return u.header; }),
              warns: /پاسخ این ستون‌ها وارد نمی‌شود/.test(txt),
-             namesIt: /Q7/.test(txt) };
+             namesIt: /Question7/.test(txt) };
   });
   check('a column for a question the design lacks stays unmapped',
-    orphan.unmapped.indexOf('Q7') !== -1, orphan.unmapped.join(','));
+    orphan.unmapped.indexOf('Question7') !== -1, orphan.unmapped.join(','));
   check('the preview warns that those answers will be dropped', orphan.warns);
   check('the warning names the column', orphan.namesIt);
   await page.evaluate(function () {
