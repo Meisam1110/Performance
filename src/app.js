@@ -1956,6 +1956,27 @@
    * manager, by department, by anything — as long as that manager appears
    * somewhere in the file's own chain.
    */
+  /**
+   * The value an employee is grouped under, for any field.
+   *
+   * For a management layer this is not the cell itself. Not everyone has a
+   * manager at every level: where the layer is empty the next layer up answers
+   * for that person — no 3 means their 3H, no 3H means their 4, and so on — so
+   * a split by any layer covers everybody rather than quietly leaving out
+   * whoever has a gap there. Reading the raw cell was why a split by 3H
+   * produced three lists covering thirty-five of eighty-five people.
+   */
+  function groupKeyFor(employee, field) {
+    var layer = -1;
+    Tpl.MANAGER_LAYERS.forEach(function (l, i) { if (l.key === field) layer = i; });
+    if (layer >= 0) {
+      var m = Tpl.managerFor(employee, layer);
+      return m ? m.name : '';
+    }
+    var v = employee[field];
+    return v === null || v === undefined ? '' : String(v);
+  }
+
   function managerDirectory() {
     if (App._mailDir && App._mailDirStamp === App.state.employees.length) {
       return App._mailDir;
@@ -2002,8 +2023,7 @@
     var fields = splitFields();
     for (var i = 0; i < fields.length; i++) {
       var filled = App.state.employees.filter(function (e) {
-        var v = e[fields[i].key];
-        return v && !Tpl.blankLayer(v);
+        return !!groupKeyFor(e, fields[i].key);
       }).length;
       if (filled) return fields[i].key;
     }
@@ -2054,13 +2074,10 @@
       Tpl.MANAGER_LAYERS.forEach(function (l, i) { if (l.key === f) layerIndex = i; });
       var g = {}, dir = managerDirectory();
       inScopeEmployees().forEach(function (e) {
-        var name, mail = '';
+        var name = groupKeyFor(e, f) || '— ثبت نشده', mail = '';
         if (layerIndex >= 0) {
           var m = Tpl.managerFor(e, layerIndex);
-          name = m ? m.name : '— ثبت نشده';
           mail = m ? m.email : '';
-        } else {
-          name = e[f] || '— ثبت نشده';
         }
         /* Whatever the group was formed by, if its name is a manager the file
            knows, their own address is the one to write in. */
@@ -2203,11 +2220,7 @@
 
     function belongs(e, name) {
       if (!inScopeForRole({ division: e.division })) return false;
-      if (layerIndex >= 0) {
-        var m = Tpl.managerFor(e, layerIndex);
-        return (m ? m.name : '— ثبت نشده') === name;
-      }
-      return String(e[opts.field] || '— ثبت نشده') === name;
+      return (groupKeyFor(e, opts.field) || '— ثبت نشده') === name;
     }
 
     var made = 0, mailed = 0, noAddress = [];
@@ -5564,7 +5577,7 @@
     var meta = GROUPINGS[field] || GROUPINGS.jobLevel;
     var groups = {};
     templateRoster().forEach(function (e) {
-      var k = e[field] || 'نامشخص';
+      var k = groupKeyFor(e, field) || 'نامشخص';
       (groups[k] || (groups[k] = [])).push(e);
     });
     var names = Object.keys(groups).sort(function (a, b) {
@@ -6156,7 +6169,7 @@
     var roster = payrollRoster();
     var groups = {};
     roster.forEach(function (e) {
-      var k = e[field] || '— بدون مدیر';
+      var k = groupKeyFor(e, field) || '— بدون مدیر';
       (groups[k] || (groups[k] = [])).push(e);
     });
     var names = Object.keys(groups).sort(function (a, b) { return a.localeCompare(b, 'fa'); });
@@ -6211,6 +6224,9 @@
      the modal, the same way `recalc` is exposed for the rest of the suite. */
   /* Test hook: the roster a questionnaire template is built from. */
   window.__templateRoster = function (filter) { return templateRoster(filter); };
+
+  /* Test hook: the group an employee falls into for a given field. */
+  window.__groupKey = function (employee, field) { return groupKeyFor(employee, field); };
 
   /* Test hook: open the split dialog without clicking through the roster. */
   window.__openSplit = function (field) { return openManagerSplit(field); };
@@ -6275,7 +6291,7 @@
   /** Which employees and answers belong to one handover. */
   function packageSlice(field, value) {
     var employees = App.state.employees.filter(function (e) {
-      return String(e[field] || '') === String(value);
+      return groupKeyFor(e, field) === String(value);
     });
     var ids = {};
     employees.forEach(function (e) { ids[e.employeeId] = 1; });
@@ -6433,7 +6449,7 @@
       var g = {};
       App.state.employees.forEach(function (e) {
         if (!isPayrollEligible(e)) return;
-        var k = e[f];
+        var k = groupKeyFor(e, f);
         if (!k) return;
         g[k] = (g[k] || 0) + 1;
       });

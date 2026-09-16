@@ -1268,6 +1268,66 @@ function near(a, b, tol) { return Math.abs(a - b) <= tol; }
   check('a bulk answer fills every blank it targeted', filled.filled && filled.blanks === 0,
     filled.blanks + ' still blank');
 
+  console.log('\n== A SPLIT BY LAYER LEAVES NOBODY OUT ==');
+  /* Not everyone has a manager at every level. Grouping by a layer must fall
+     up the chain — no 3 means their 3H, no 3H their 4, no 4 their 5 — so a
+     split covers the whole roster instead of only the people whose own cell
+     happens to be filled. */
+  var layers = await page.evaluate(function () {
+    window.__savedLayerRoster = window.App.state.employees;
+    window.App.state.employees = [
+      { employeeId: 'A1', fullName: 'الف', managerL3: 'مدیر سه', managerL3h: 'مدیر سه‌اچ',
+        managerL4: 'مدیر چهار', managerL5: 'مدیر پنج' },
+      { employeeId: 'B2', fullName: 'ب', managerL3: '', managerL3h: 'مدیر سه‌اچ',
+        managerL4: 'مدیر چهار', managerL5: 'مدیر پنج' },
+      { employeeId: 'C3', fullName: 'ج', managerL3: '', managerL3h: '',
+        managerL4: 'مدیر چهار', managerL5: 'مدیر پنج' },
+      { employeeId: 'D4', fullName: 'د', managerL3: '', managerL3h: '',
+        managerL4: '-', managerL5: 'مدیر پنج' },
+      { employeeId: 'E5', fullName: 'ه', managerL3: '', managerL3h: '',
+        managerL4: '', managerL5: '' }
+    ];
+    window.App._empIndexStamp = -1;
+    var key = window.__groupKey;
+    var byLayer = {};
+    ['managerL3', 'managerL3h', 'managerL4', 'managerL5'].forEach(function (f) {
+      byLayer[f] = window.App.state.employees.map(function (e) { return key(e, f); });
+    });
+    return byLayer;
+  });
+  check('someone with a level-3 manager is grouped under them',
+    layers.managerL3[0] === 'مدیر سه', layers.managerL3[0]);
+  check('no level 3 falls up to the 3H manager',
+    layers.managerL3[1] === 'مدیر سه‌اچ', layers.managerL3[1]);
+  check('no 3 and no 3H falls up to the level-4 manager',
+    layers.managerL3[2] === 'مدیر چهار', layers.managerL3[2]);
+  check('an empty layer 4 keeps falling up to level 5',
+    layers.managerL3[3] === 'مدیر پنج', layers.managerL3[3]);
+  check('someone with no manager anywhere is left out rather than guessed',
+    layers.managerL3[4] === '', '"' + layers.managerL3[4] + '"');
+  check('the same holds when the split is by 3H',
+    layers.managerL3h.slice(0, 4).join('|') === 'مدیر سه‌اچ|مدیر سه‌اچ|مدیر چهار|مدیر پنج',
+    layers.managerL3h.join('|'));
+  check('splitting by a higher layer still covers people below it',
+    layers.managerL5[0] === 'مدیر پنج' && layers.managerL4[0] === 'مدیر چهار',
+    layers.managerL5[0] + ' / ' + layers.managerL4[0]);
+
+  var coverage = await page.evaluate(function () {
+    var out = {};
+    ['managerL3', 'managerL3h', 'managerL4'].forEach(function (f) {
+      out[f] = window.App.state.employees.filter(function (e) {
+        return !!window.__groupKey(e, f);
+      }).length;
+    });
+    window.App.state.employees = window.__savedLayerRoster;
+    window.App._empIndexStamp = -1;
+    window.App.recalc();
+    return out;
+  });
+  check('every layer covers everyone who has any manager at all',
+    coverage.managerL3 === 4 && coverage.managerL3h === 4 && coverage.managerL4 === 4,
+    JSON.stringify(coverage));
+
   console.log('\n== COLUMN MAPPING SURVIVES AN UPGRADE ==');
   /* A file saved before a field existed must still recognise its columns:
      the stored mappings are an overlay, not the whole dictionary. */
